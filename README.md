@@ -1,3 +1,25 @@
+# Doctor Mobile — mihomo fork
+
+This is the Doctor Mobile fork of [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo),
+built and shipped ourselves so our app owns its VPN core. Based on the official
+release **v1.19.29**. Development happens on the [`doctormobile`](../../tree/doctormobile) branch.
+
+### Our changes
+- **`tun(android)`: don't fail TUN start when `packages.xml` is unreadable**
+  ([`2e34689`](../../commit/2e34689)) — mihomo runs as an unprivileged VpnService
+  subprocess, so it cannot read `/data/system/packages.xml` for per-app rules
+  (which we don't use: `auto-route` and `find-process-mode` are off). Upstream
+  treated that read error as fatal, aborting the whole TUN and dropping all
+  device traffic. We degrade gracefully (warn + skip) instead.
+- **`anytls`: support `reality-opts`** ([`fc21579`](../../commit/fc21579)) —
+  upstream mihomo's `AnyTLSOption` has no REALITY, so anytls+REALITY nodes could
+  never connect. The TLS path anytls already uses supports REALITY, so we just
+  expose `reality-opts` and wire it through.
+- **CI**: [`android-dm.yml`](../../blob/doctormobile/.github/workflows/android-dm.yml)
+  builds `libmihomo.so` for android arm64 / armv7 / x86_64.
+
+---
+
 <h1 align="center">
   <img src="Meta.png" alt="Meta Kennel" width="200">
   <br>Meta Kernel<br>
