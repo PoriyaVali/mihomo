@@ -2,7 +2,8 @@ name: Android build (Doctor Mobile)
 
 # Builds the mihomo core as an android executable (libmihomo.so) for the arches
 # the Doctor Mobile app ships. arm64 is pure-Go; armv7 and x86_64 need the NDK
-# for cgo linking. Run on the doctormobile branch, on a -dm tag, or manually.
+# for cgo linking. On a -dm tag it also publishes a Release with the per-abi
+# binaries the app downloads.
 on:
   push:
     branches: [doctormobile]
@@ -31,18 +32,34 @@ jobs:
         with: { ndk-version: r28, add-to-path: false }
       - name: Build libmihomo.so
         run: |
-          VER="$(git describe --tags --always 2>/dev/null)-dm"
+          VER="$(git describe --tags --always 2>/dev/null)"
           export GOOS=android GOARCH=${{ matrix.goarch }} GOARM=${{ matrix.goarm }} CGO_ENABLED=${{ matrix.cgo }}
           if [ "${{ matrix.cgo }}" = "1" ]; then
             export CC="${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.cc }}"
           fi
           go build -tags with_gvisor -trimpath \
             -ldflags "-X 'github.com/metacubex/mihomo/constant.Version=$VER' -s -w" \
-            -o libmihomo.so .
-          mkdir -p out/${{ matrix.abi }}
-          mv libmihomo.so out/${{ matrix.abi }}/libmihomo.so
-          ls -la out/${{ matrix.abi }}/
+            -o "libmihomo-${{ matrix.abi }}.so" .
+          ls -la "libmihomo-${{ matrix.abi }}.so"
       - uses: actions/upload-artifact@v4
         with:
           name: libmihomo-${{ matrix.abi }}
-          path: out/${{ matrix.abi }}/libmihomo.so
+          path: libmihomo-${{ matrix.abi }}.so
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - run: ls -la artifacts/
+      - name: Publish release with per-abi binaries
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: artifacts/libmihomo-*.so
