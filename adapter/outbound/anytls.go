@@ -40,6 +40,7 @@ type AnyTLSOption struct {
 	SkipCertVerify           bool             `proxy:"skip-cert-verify,omitempty"`
 	NameCertVerify           string           `proxy:"name-cert-verify,omitempty"`
 	Fingerprint              string           `proxy:"fingerprint,omitempty"`
+	RealityOpts              RealityOptions   `proxy:"reality-opts,omitempty"`
 	Certificate              string           `proxy:"certificate,omitempty"`
 	PrivateKey               string           `proxy:"private-key,omitempty"`
 	UDP                      bool             `proxy:"udp,omitempty"`
@@ -135,6 +136,10 @@ func NewAnyTLS(option AnyTLSOption) (*AnyTLS, error) {
 	if err != nil {
 		return nil, err
 	}
+	realityConfig, err := option.RealityOpts.Parse()
+	if err != nil {
+		return nil, err
+	}
 	securityModes := make([]string, 0, 3)
 	if shadowTLSConfig != nil {
 		securityModes = append(securityModes, "ShadowTLS")
@@ -161,6 +166,7 @@ func NewAnyTLS(option AnyTLSOption) (*AnyTLS, error) {
 		ShadowTLS:         shadowTLSConfig,
 		Restls:            restlsConfig,
 		JLS:               jlsConfig,
+		Reality:           realityConfig,
 	}
 	if tlsConfig.Host == "" {
 		tlsConfig.Host = option.Server
