@@ -49,7 +49,13 @@ func getPackageManager() (tun.PackageManager, error) {
 func (l *Listener) buildAndroidRules(tunOptions *tun.Options) error {
 	packageManager, err := getPackageManager()
 	if err != nil {
-		return err
+		// The package manager reads /data/system/packages.xml, which an
+		// unprivileged app uid cannot open. We run mihomo as a VpnService
+		// subprocess with auto-route off and find-process-mode off, so per-app
+		// rules are unnecessary - degrade gracefully instead of failing the
+		// whole TUN start (Doctor Mobile).
+		log.Warnln("[TUN] android package manager unavailable (%s); skipping per-app rules", err)
+		return nil
 	}
 	tunOptions.BuildAndroidRules(packageManager, l.handler)
 	return nil
