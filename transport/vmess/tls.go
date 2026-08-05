@@ -7,6 +7,7 @@ import (
 
 	"github.com/metacubex/mihomo/component/ca"
 	"github.com/metacubex/mihomo/component/ech"
+	"github.com/metacubex/mihomo/component/mirage"
 	tlsC "github.com/metacubex/mihomo/component/tls"
 	"github.com/metacubex/mihomo/transport/jls"
 	"github.com/metacubex/mihomo/transport/restls"
@@ -110,6 +111,12 @@ func StreamTLSConn(ctx context.Context, conn net.Conn, cfg *TLSConfig) (net.Conn
 	if err != nil {
 		return nil, err
 	}
+
+	// Mirage: fragment the ClientHello so an on-path censor cannot match on the
+	// server name. Wrapping here covers all three handshakes below - REALITY,
+	// uTLS and plain TLS - and nothing above, since ShadowTLS/Restls/JLS/
+	// TLSMirror carry their own framing and must not be rewritten.
+	conn = mirage.Wrap(conn)
 
 	if clientFingerprint, ok := tlsC.GetFingerprint(cfg.ClientFingerprint); ok {
 		if cfg.Reality != nil {
