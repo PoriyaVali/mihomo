@@ -1,0 +1,57 @@
+name: Desktop + OpenWRT (Doctor Mobile)
+
+# Builds the mihomo core for the desktop (Windows) and router (OpenWRT/Linux)
+# targets, so a future Windows or OpenWRT edition of the app has its core ready.
+# All pure-Go (CGO off); publishes to the same -dm release as the android build.
+on:
+  push:
+    tags: ['v*-dm*']
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { name: windows-amd64,          goos: windows, goarch: amd64, ext: '.exe' }
+          - { name: windows-arm64,          goos: windows, goarch: arm64, ext: '.exe' }
+          - { name: linux-amd64,            goos: linux,   goarch: amd64 }
+          - { name: linux-arm64,            goos: linux,   goarch: arm64 }
+          - { name: linux-armv7,            goos: linux,   goarch: arm,    goarm: '7' }
+          - { name: linux-mipsle-softfloat, goos: linux,   goarch: mipsle, gomips: softfloat }
+          - { name: linux-mips-softfloat,   goos: linux,   goarch: mips,   gomips: softfloat }
+    steps:
+      - uses: actions/checkout@v4
+        with: { fetch-depth: 0 }
+      - uses: actions/setup-go@v5
+        with: { go-version: '1.25' }
+      - name: Build mihomo (${{ matrix.name }})
+        run: |
+          VER="$(git describe --tags --always 2>/dev/null)"
+          CGO_ENABLED=0 GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} \
+            GOARM=${{ matrix.goarm }} GOMIPS=${{ matrix.gomips }} \
+            go build -tags with_gvisor -trimpath \
+            -ldflags "-X 'github.com/metacubex/mihomo/constant.Version=$VER' -s -w" \
+            -o "mihomo-${{ matrix.name }}${{ matrix.ext }}" .
+          ls -la "mihomo-${{ matrix.name }}${{ matrix.ext }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: mihomo-${{ matrix.name }}
+          path: mihomo-${{ matrix.name }}${{ matrix.ext }}
+
+  release:
+    if: startsWith(github.ref, 'refs/tags/')
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with: { path: artifacts, merge-multiple: true }
+      - run: ls -la artifacts/
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ github.ref_name }}
+          files: artifacts/mihomo-*
