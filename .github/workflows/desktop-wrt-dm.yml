@@ -27,6 +27,9 @@ jobs:
         with: { fetch-depth: 0 }
       - uses: actions/setup-go@v5
         with: { go-version: '1.25' }
+      - name: Test scoped public DNS response selection
+        if: matrix.name == 'windows-amd64'
+        run: go test -mod=readonly ./dns ./config -run 'TestPublicIP|TestParsePublicIP' -count=1
       - name: Build mihomo (${{ matrix.name }})
         run: |
           VER="$(git describe --tags --always 2>/dev/null)"

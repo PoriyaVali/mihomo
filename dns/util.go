@@ -7,6 +7,7 @@ import (
 	"net/netip"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/metacubex/mihomo/common/picker"
@@ -138,6 +139,7 @@ func transform(servers []NameServer, resolver resolver.Resolver) []dnsClient {
 
 		c = warpClientWithEdns0Subnet(c, s.Params)
 		c = warpClientWithDisableTypes(c, s.Params)
+		c = wrapClientWithPublicIPFilter(c, s.Params)
 
 		ret = append(ret, c)
 	}
@@ -371,6 +373,8 @@ func msgToLogString(msg *D.Msg) string {
 
 func batchExchange(ctx context.Context, clients []dnsClient, m *D.Msg) (msg *D.Msg, cache bool, err error) {
 	cache = true
+	var deferredMu sync.Mutex
+	var deferred *D.Msg
 	fast, ctx := picker.WithTimeout[*D.Msg](ctx, resolver.DefaultDNSTimeout)
 	defer fast.Close()
 	domain := msgToDomain(m)
@@ -385,6 +389,14 @@ func batchExchange(ctx context.Context, clients []dnsClient, m *D.Msg) (msg *D.M
 			log.Debugln("[DNS] resolve %s %s from %s", domain, qTypeStr, client.Address())
 			m, err := client.ExchangeContext(ctx, m)
 			if err != nil {
+				var answer *deferredDNSAnswer
+				if errors.As(err, &answer) {
+					deferredMu.Lock()
+					if deferred == nil {
+						deferred = answer.msg
+					}
+					deferredMu.Unlock()
+				}
 				return nil, err
 			} else if cache && (m.Rcode == D.RcodeServerFailure || m.Rcode == D.RcodeRefused) {
 				// currently, cache indicates whether this msg was from a RCode client,
@@ -397,6 +409,11 @@ func batchExchange(ctx context.Context, clients []dnsClient, m *D.Msg) (msg *D.M
 	}
 
 	msg = fast.Wait()
+	if msg == nil && deferred != nil {
+		// Wait joins every exchange, so deferred is no longer being written.
+		// Preserve NXDOMAIN/NODATA semantics after all servers had a chance.
+		msg = deferred
+	}
 	if msg == nil {
 		err = errors.New("all DNS requests failed")
 		if fErr := fast.Error(); fErr != nil {

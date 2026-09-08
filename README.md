@@ -5,6 +5,14 @@ built and shipped ourselves so our app owns its VPN core. Based on the official
 release **v1.19.29**. Development happens on the [`doctormobile`](../../tree/doctormobile) branch.
 
 ### Our changes
+- **Opt-in public-domain DNS validation**: append `#dm-public-ip=true` to
+  nameservers used by a public-domain `nameserver-policy` (or append
+  `&dm-public-ip=true` after an existing fragment). Private, loopback, and fake
+  A/AAAA replies cannot win the parallel resolver pool; negative and alias-only
+  replies wait for competing address answers, then remain valid if none exists.
+  Use `direct-nameserver-follow-policy: true` to apply the same policy to DIRECT
+  lookups. Do not enable this option on LAN or intentionally private split-DNS
+  policies. Servers without the option retain upstream behavior.
 - **`tun(android)`: don't fail TUN start when `packages.xml` is unreadable**
   ([`2e34689`](../../commit/2e34689)) — mihomo runs as an unprivileged VpnService
   subprocess, so it cannot read `/data/system/packages.xml` for per-app rules
