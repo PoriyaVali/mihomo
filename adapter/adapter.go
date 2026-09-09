@@ -275,7 +275,32 @@ func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.In
 
 	satisfied = resp != nil && (expectedStatus == nil || expectedStatus.Check(uint16(resp.StatusCode)))
 	t = uint16(time.Since(start) / time.Millisecond)
+	if !satisfied {
+		// The caller has to be told. Until now a status the caller explicitly
+		// refused was recorded against the per-URL state and then reported to
+		// the caller as success with a positive delay - so an endpoint
+		// answering 403 or 500 looked exactly like a healthy one, and any
+		// measurement built on this call counted it as a working proxy.
+		//
+		// A distinct type, not a bare error, because "the server answered
+		// something we did not ask for" and "we could not reach the server"
+		// need different treatment: the first says nothing about the path,
+		// the second says the path is broken.
+		err = UnexpectedStatusError{Status: uint16(resp.StatusCode), Expected: expectedStatus}
+	}
 	return
+}
+
+// UnexpectedStatusError is returned by [Proxy.URLTest] when the request
+// completed but the response status was outside the range the caller asked
+// for. The connection worked; the answer was not the expected one.
+type UnexpectedStatusError struct {
+	Status   uint16
+	Expected utils.IntRanges[uint16]
+}
+
+func (e UnexpectedStatusError) Error() string {
+	return fmt.Sprintf("unexpected status %d, expected %s", e.Status, e.Expected.String())
 }
 
 func NewProxy(adapter C.ProxyAdapter) *Proxy {
