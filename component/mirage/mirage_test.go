@@ -33,8 +33,13 @@ func TestShape(t *testing.T) {
 	if n != len(hello) {
 		t.Fatalf("Write reported %d, want %d", n, len(hello))
 	}
-	if cap.writes != 1 {
-		t.Fatalf("both records must leave in one segment, got %d writes", cap.writes)
+	// Each record in its own write. This assertion is the guard, not a detail:
+	// the single-write form it used to require is exactly what Hamrah-e Aval
+	// began dropping in silence on 2026-09-09, measured 0 reached out of 3
+	// against a blocked name while two writes reached 3 of 3. Anyone who
+	// "optimises" these back into one buffer breaks the core on that carrier.
+	if cap.writes != 2 {
+		t.Fatalf("each record must leave in its own write, got %d", cap.writes)
 	}
 
 	records := parseRecords(t, cap.buf.Bytes())

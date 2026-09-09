@@ -2,18 +2,45 @@
 // censor cannot match on the server name, while the real server reassembles the
 // handshake normally.
 //
-// The shape is the whole point. Splitting the handshake at a random position
-// *inside* the SNI hostname — what most existing implementations do — was
-// measured to be dropped by Iran's DPI, even for a hostname that is otherwise
-// allowed. What survives is the opposite: one small first record that ends
-// *before* the SNI, with the name left intact in the second record, and both
-// records written in a single TCP segment. That censor parses only the first
-// TLS record looking for a server name; when the name is not there it stops
-// looking rather than reassembling the records.
+// The shape is the whole point, and on 2026-09-09 the shape that works
+// INVERTED on Hamrah-e Aval. Both records used to go out in a single write.
+// That form is now dropped in silence, and the fix is to write each record
+// separately.
 //
-// Splitting at the TCP layer instead does not help: the same censor
+// Measured that evening on a rooted handset on MCI LTE, with a probe using
+// this core's own uTLS Chrome fingerprint, against 1.1.1.1:443 with the
+// genuinely blocked name instagram.com. A shape that REACHES there has evaded;
+// the untouched control is reset, which is what proves the censor is watching.
+// Three rounds, order rotated, 15 s between every attempt:
+//
+//	untouched (control)          0 reached, 3 reset
+//	two records, ONE write       0 reached, 3 dropped in silence
+//	two records, two writes      3 reached   (at 0, 5, 20 and 50 ms apart)
+//	three records, three writes  3 reached
+//	two records, split at 64     3 reached
+//
+// The same pattern held against our own REALITY node on 8443 with its borrowed
+// name. And with the old single-write form, this core could not complete ONE
+// session on that carrier: a packet capture started before the process caught
+// 69 flows to our nodes, all 69 beginning with the 5-byte first record, and not
+// one of them received a single byte back.
+//
+// Two things follow that are worth keeping in mind before anyone "tidies" this:
+//
+//   - The delay between the writes does nothing. Zero milliseconds passed just
+//     as well as fifty. What matters is that the records leave in separate
+//     writes, so there is no sleep here to pay for or to fingerprint.
+//   - Six shapes passed, not one. If this one is ever detected, the split point
+//     and the record count are both free variables.
+//
+// Splitting at the TCP layer instead still does not help: the censor
 // reassembles the TCP stream before matching, so this has to happen at the
 // record layer.
+//
+// ⚠️ Measured on MCI only. An August measurement on Irancell found the exact
+// opposite - one write worked and separate writes failed - and whether that is
+// a carrier difference or a change over time is NOT established. Do not treat
+// either form as universal.
 //
 // Enabled by default. Set DM_MIRAGE=0 to turn it off.
 package mirage
@@ -75,12 +102,17 @@ func (c *Conn) Write(b []byte) (int, error) {
 	}
 	c.firstWritten = true
 
-	out, ok := split(b, c.offset)
+	first, second, ok := split(b, c.offset)
 	if !ok {
 		// Not something we can fragment - send it exactly as given.
 		return c.Conn.Write(b)
 	}
-	if _, err := c.Conn.Write(out); err != nil {
+	// Two writes, deliberately. Concatenating them is the form the censor
+	// drops; see the package comment for the measurement.
+	if _, err := c.Conn.Write(first); err != nil {
+		return 0, err
+	}
+	if _, err := c.Conn.Write(second); err != nil {
 		return 0, err
 	}
 	// Report the caller's length: from their point of view the whole buffer
@@ -91,35 +123,35 @@ func (c *Conn) Write(b []byte) (int, error) {
 func (c *Conn) Upstream() any { return c.Conn }
 
 // split rewrites a ClientHello record into two records, the first ending
-// before the server name.
-func split(record []byte, off int) ([]byte, bool) {
+// before the server name, returned separately so the caller can write each in
+// its own segment.
+func split(record []byte, off int) ([]byte, []byte, bool) {
 	if off <= 0 {
 		off = defaultOffset
 	}
 	if len(record) <= recordHeaderLen || record[0] != recordHandshake {
-		return nil, false
+		return nil, nil, false
 	}
 	hs := record[recordHeaderLen:]
 	if len(hs) == 0 || hs[0] != handshakeHello {
-		return nil, false
+		return nil, nil, false
 	}
 	sni := indexSNI(hs)
 	if sni < 0 {
 		// No server name to hide, so there is nothing to gain.
-		return nil, false
+		return nil, nil, false
 	}
 	at := off
 	if at >= sni {
 		at = sni / 2
 	}
 	if at <= 0 || at >= len(hs) {
-		return nil, false
+		return nil, nil, false
 	}
 
-	out := make([]byte, 0, len(record)+recordHeaderLen)
-	out = appendRecord(out, record[:3], hs[:at])
-	out = appendRecord(out, record[:3], hs[at:])
-	return out, true
+	first := appendRecord(make([]byte, 0, recordHeaderLen+at), record[:3], hs[:at])
+	second := appendRecord(make([]byte, 0, recordHeaderLen+len(hs)-at), record[:3], hs[at:])
+	return first, second, true
 }
 
 func appendRecord(dst, headerPrefix, payload []byte) []byte {
