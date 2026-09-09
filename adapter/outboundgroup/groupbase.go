@@ -234,23 +234,51 @@ func (gb *GroupBase) GetProxies(touch bool) []C.Proxy {
 	return proxies
 }
 
+// maxConcurrentURLTests bounds how many members of a group are tested at once.
+//
+// This fan-out used to be unbounded: every proxy in the group started its own
+// handshake in the same instant, so a seventeen-node group opened seventeen
+// simultaneous TLS connections to seventeen endpoints.
+//
+// That is worth avoiding for its own sake, and there is a specific reason
+// here. Measured on Hamrah-e Aval on 2026-09-09, six fragmented handshakes in
+// quick succession were followed by plain TCP connect() failing eight times in
+// a row for close to a minute, while an untouched handshake succeeded
+// immediately before and after. A censor that answers a burst by suppressing
+// the address turns one unreachable node into an outage for everything.
+//
+// ⚠️ Ten is the limit the provider health check already uses, not a number
+// shown to be safe. The penalty above was provoked by six attempts, so this
+// bounds the damage rather than removing it; a shared budget across the paths
+// that can trigger a sweep is the real fix and is not attempted here.
+const maxConcurrentURLTests = 10
+
 func (gb *GroupBase) URLTest(ctx context.Context, url string, expectedStatus utils.IntRanges[uint16]) (map[string]uint16, error) {
 	var wg sync.WaitGroup
 	var lock sync.Mutex
 	mp := map[string]uint16{}
 	proxies := gb.GetProxies(false)
+	slots := make(chan struct{}, maxConcurrentURLTests)
 	for _, proxy := range proxies {
 		proxy := proxy
 		wg.Add(1)
 		go func() {
+			defer wg.Done()
+			select {
+			case slots <- struct{}{}:
+				defer func() { <-slots }()
+			case <-ctx.Done():
+				// The caller gave up while this one was queued. Starting the
+				// handshake now would add an attempt nobody is waiting for,
+				// which is exactly the traffic this bound exists to limit.
+				return
+			}
 			delay, err := proxy.URLTest(ctx, url, expectedStatus)
 			if err == nil {
 				lock.Lock()
 				mp[proxy.Name()] = delay
 				lock.Unlock()
 			}
-
-			wg.Done()
 		}()
 	}
 	wg.Wait()
