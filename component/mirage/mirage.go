@@ -37,10 +37,29 @@
 // reassembles the TCP stream before matching, so this has to happen at the
 // record layer.
 //
-// ⚠️ Measured on MCI only. An August measurement on Irancell found the exact
-// opposite - one write worked and separate writes failed - and whether that is
-// a carrier difference or a change over time is NOT established. Do not treat
-// either form as universal.
+// Irancell was measured the same evening with the data SIM switched on the same
+// handset, same probe, three rounds, order rotated, 20 s apart: EVERY
+// fragmented shape passed there, including the single-write form MCI kills, and
+// the August note claiming separate writes always failed on Irancell did not
+// reproduce - twelve of twelve reached.
+//
+// 🔑 So two records in two writes is the only shape measured to pass on BOTH
+// carriers, which is why it is the default.
+//
+// ⚠️ But the carriers behave differently enough that the shape must stay
+// steerable. Against a genuinely blocked name, no shape reached on Irancell at
+// all - zero of 24 - while two writes reached on MCI. MCI matches on the SHAPE
+// and can be evaded by changing it; Irancell matches on the NAME, which
+// fragmentation does not hide. A borrowed name that gets blocked cannot be
+// rescued by anything here.
+//
+// Every knob below is settable from the panel so the next disagreement costs a
+// setting rather than a release:
+//
+//	DM_MIRAGE=0            off entirely
+//	DM_MIRAGE_OFFSET=n     where the first record ends (5 and 64 both measured)
+//	DM_MIRAGE_RECORDS=n    how many records (2 and 3 both measured)
+//	DM_MIRAGE_COALESCE=1   the old single-write form, for a network that wants it
 //
 // Enabled by default. Set DM_MIRAGE=0 to turn it off.
 package mirage
@@ -67,6 +86,22 @@ const (
 var (
 	enabled = envBool("DM_MIRAGE", true)
 	offset  = envInt("DM_MIRAGE_OFFSET", defaultOffset)
+
+	// coalesce puts every record in one write instead of one write each.
+	//
+	// This exists because the two carriers measured on 2026-09-09 disagreed:
+	// MCI drops the single-write form and Irancell accepts either, so two
+	// writes is what ships. But the disagreement is the point - a censor that
+	// starts matching on separate writes would leave us with no answer that
+	// does not need a new build, and the shape is not something an offset can
+	// express. DM_MIRAGE_COALESCE=1 restores the old form from the panel.
+	coalesce = envBool("DM_MIRAGE_COALESCE", false)
+
+	// records is how many TLS records the handshake is cut into. Three was
+	// measured to pass on both carriers as well, so it is a real alternative
+	// rather than a guess, and it is the other free variable if the two-record
+	// shape is ever singled out.
+	records = envInt("DM_MIRAGE_RECORDS", 2)
 )
 
 // Enabled reports whether Mirage should wrap new TLS connections.
@@ -102,18 +137,28 @@ func (c *Conn) Write(b []byte) (int, error) {
 	}
 	c.firstWritten = true
 
-	first, second, ok := split(b, c.offset)
+	parts, ok := splitN(b, c.offset, records)
 	if !ok {
 		// Not something we can fragment - send it exactly as given.
 		return c.Conn.Write(b)
 	}
-	// Two writes, deliberately. Concatenating them is the form the censor
-	// drops; see the package comment for the measurement.
-	if _, err := c.Conn.Write(first); err != nil {
-		return 0, err
+	// One write per record by default. Concatenating them is the form MCI
+	// drops; see the package comment for the measurement. The panel can ask
+	// for the old shape back without a build.
+	if coalesce {
+		var all []byte
+		for _, r := range parts {
+			all = append(all, r...)
+		}
+		if _, err := c.Conn.Write(all); err != nil {
+			return 0, err
+		}
+		return len(b), nil
 	}
-	if _, err := c.Conn.Write(second); err != nil {
-		return 0, err
+	for _, r := range parts {
+		if _, err := c.Conn.Write(r); err != nil {
+			return 0, err
+		}
 	}
 	// Report the caller's length: from their point of view the whole buffer
 	// was written, which is what io.Writer promises.
@@ -121,6 +166,34 @@ func (c *Conn) Write(b []byte) (int, error) {
 }
 
 func (c *Conn) Upstream() any { return c.Conn }
+
+// splitN rewrites a ClientHello into n records, the first ending before the
+// server name, returned separately so the caller can write each on its own.
+//
+// Extra records beyond the second are carved out of the remainder AFTER the
+// name, never out of the name itself: a cut inside the server name is the one
+// shape measured to be dropped even for a hostname that is otherwise allowed.
+func splitN(record []byte, off, n int) ([][]byte, bool) {
+	first, second, ok := split(record, off)
+	if !ok {
+		return nil, false
+	}
+	parts := [][]byte{first, second}
+	// Re-cut the tail, which is a complete record, into n-1 pieces.
+	for len(parts) < n {
+		tail := parts[len(parts)-1]
+		body := tail[recordHeaderLen:]
+		if len(body) < 2 {
+			break // nothing left worth cutting
+		}
+		at := len(body) / 2
+		parts = parts[:len(parts)-1]
+		parts = append(parts,
+			appendRecord(make([]byte, 0, recordHeaderLen+at), tail[:3], body[:at]),
+			appendRecord(make([]byte, 0, recordHeaderLen+len(body)-at), tail[:3], body[at:]))
+	}
+	return parts, true
+}
 
 // split rewrites a ClientHello record into two records, the first ending
 // before the server name, returned separately so the caller can write each in
