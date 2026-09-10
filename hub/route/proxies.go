@@ -2,10 +2,12 @@ package route
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strconv"
 	"time"
 
+	"github.com/metacubex/mihomo/adapter"
 	"github.com/metacubex/mihomo/adapter/outboundgroup"
 	"github.com/metacubex/mihomo/common/utils"
 	"github.com/metacubex/mihomo/component/profile/cachefile"
@@ -122,7 +124,7 @@ func getProxyDelay(w http.ResponseWriter, r *http.Request) {
 
 	proxy := r.Context().Value(CtxKeyProxy).(C.Proxy)
 
-	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond*time.Duration(timeout))
+	ctx, cancel := context.WithTimeout(r.Context(), time.Millisecond*time.Duration(timeout))
 	defer cancel()
 
 	delay, err := proxy.URLTest(ctx, url, expectedStatus)
@@ -134,8 +136,10 @@ func getProxyDelay(w http.ResponseWriter, r *http.Request) {
 
 	if err != nil || delay == 0 {
 		render.Status(r, http.StatusServiceUnavailable)
-		if err != nil && delay != 0 {
-			render.JSON(w, r, err)
+		var statusErr adapter.UnexpectedStatusError
+		if errors.As(err, &statusErr) {
+			// Known safe fields only, not a transport error containing node URLs.
+			render.JSON(w, r, newError(statusErr.Error()))
 		} else {
 			render.JSON(w, r, newError("An error occurred in the delay test"))
 		}

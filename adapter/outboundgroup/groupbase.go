@@ -247,13 +247,16 @@ func (gb *GroupBase) GetProxies(touch bool) []C.Proxy {
 // immediately before and after. A censor that answers a burst by suppressing
 // the address turns one unreachable node into an outage for everything.
 //
-// ⚠️ Ten is the limit the provider health check already uses, not a number
-// shown to be safe. The penalty above was provoked by six attempts, so this
-// bounds the damage rather than removing it; a shared budget across the paths
-// that can trigger a sweep is the real fix and is not attempted here.
+// Ten bounds local group subscribers. Actual probes now also pass through the
+// shared scheduler in adapter.Proxy.URLTest, including individual API requests
+// and provider checks. Neither this count nor the shared pacing default is a
+// carrier-validated safe rate; the observation above remains field evidence.
 const maxConcurrentURLTests = 10
 
 func (gb *GroupBase) URLTest(ctx context.Context, url string, expectedStatus utils.IntRanges[uint16]) (map[string]uint16, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	var wg sync.WaitGroup
 	var lock sync.Mutex
 	mp := map[string]uint16{}
@@ -264,6 +267,9 @@ func (gb *GroupBase) URLTest(ctx context.Context, url string, expectedStatus uti
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
+			if ctx.Err() != nil {
+				return
+			}
 			select {
 			case slots <- struct{}{}:
 				defer func() { <-slots }()
@@ -272,6 +278,9 @@ func (gb *GroupBase) URLTest(ctx context.Context, url string, expectedStatus uti
 				// handshake now would add an attempt nobody is waiting for,
 				// which is exactly the traffic this bound exists to limit.
 				return
+			}
+			if ctx.Err() != nil {
+				return // Cancellation and slot availability can both win select.
 			}
 			delay, err := proxy.URLTest(ctx, url, expectedStatus)
 			if err == nil {
@@ -284,7 +293,7 @@ func (gb *GroupBase) URLTest(ctx context.Context, url string, expectedStatus uti
 	wg.Wait()
 
 	if len(mp) == 0 {
-		return mp, fmt.Errorf("get delay: all proxies timeout")
+		return mp, fmt.Errorf("get delay: no proxy passed the URL test")
 	} else {
 		return mp, nil
 	}

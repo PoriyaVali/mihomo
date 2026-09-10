@@ -3,6 +3,7 @@ package adapter
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"net/url"
@@ -164,10 +165,25 @@ func (p *Proxy) MarshalJSON() ([]byte, error) {
 // URLTest get the delay for the specified URL
 // implements C.Proxy
 func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.IntRanges[uint16]) (t uint16, err error) {
+	return sharedURLTests.run(ctx, p, url, expectedStatus, UnifiedDelay.Load())
+}
+
+// Called once per admitted probe, not once per subscriber to a shared probe.
+func (p *Proxy) urlTest(ctx context.Context, url string, expectedStatus utils.IntRanges[uint16], unifiedDelay bool) (t uint16, err error) {
+	if err = ctx.Err(); err != nil {
+		return // Never change health for work cancelled before admission.
+	}
 	var satisfied bool
 
 	defer func() {
-		alive := err == nil
+		if ctx.Err() != nil {
+			err = context.Cause(ctx)
+			if errors.Is(err, context.Canceled) {
+				return // User cancellation is not evidence about node health.
+			}
+		}
+		var statusErr UnexpectedStatusError
+		alive := err == nil || errors.As(err, &statusErr)
 		record := C.DelayHistory{Time: time.Now()}
 		if alive {
 			record.Delay = t
@@ -198,8 +214,6 @@ func (p *Proxy) URLTest(ctx context.Context, url string, expectedStatus utils.In
 		}
 
 	}()
-
-	unifiedDelay := UnifiedDelay.Load()
 
 	addr, err := urlToMetadata(url)
 	if err != nil {
