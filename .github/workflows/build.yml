@@ -316,6 +316,8 @@ jobs:
     - name: Archive production artifacts
       uses: actions/upload-artifact@v7
       with:
+        # 1 day: only this run's release job reads it; 90 days filled the account quota.
+        retention-days: 1
         name: "${{ matrix.jobs.goos }}-${{ matrix.jobs.output }}"
         path: |
           mihomo*.gz

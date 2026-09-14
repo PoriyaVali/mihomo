@@ -41,6 +41,8 @@ jobs:
           ls -la "mihomo-${{ matrix.name }}${{ matrix.ext }}"
       - uses: actions/upload-artifact@v4
         with:
+          # 1 day: only this run's release job reads it; 90 days filled the account quota.
+          retention-days: 1
           name: mihomo-${{ matrix.name }}
           path: mihomo-${{ matrix.name }}${{ matrix.ext }}
 
