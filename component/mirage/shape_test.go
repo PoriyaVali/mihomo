@@ -42,7 +42,8 @@ func recordSizes(t *testing.T, b []byte) []int {
 }
 
 func TestSplitNProducesTheRequestedRecordCount(t *testing.T) {
-	hello := clientHello("www.example.com")
+	// Additional safe cuts require post-SNI bytes.
+	hello := paddedMirageHello("www.example.com", 64)
 	for _, n := range []int{2, 3, 4} {
 		parts, ok := splitN(hello, defaultOffset, n)
 		if !ok {

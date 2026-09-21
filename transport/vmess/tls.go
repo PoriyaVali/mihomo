@@ -116,7 +116,7 @@ func StreamTLSConn(ctx context.Context, conn net.Conn, cfg *TLSConfig) (net.Conn
 	// server name. Wrapping here covers all three handshakes below - REALITY,
 	// uTLS and plain TLS - and nothing above, since ShadowTLS/Restls/JLS/
 	// TLSMirror carry their own framing and must not be rewritten.
-	conn = mirage.Wrap(conn)
+	conn = mirage.WrapContext(ctx, conn)
 
 	if clientFingerprint, ok := tlsC.GetFingerprint(cfg.ClientFingerprint); ok {
 		if cfg.Reality != nil {

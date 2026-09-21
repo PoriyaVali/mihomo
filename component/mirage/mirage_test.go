@@ -20,7 +20,7 @@ func (c *captureConn) Write(b []byte) (int, error) {
 }
 
 // TestShape locks in the shape measured to defeat Iran's SNI-DPI: two records
-// in a single segment, the first ending before the server name, the name
+// in separate Writes (not a TCP-segment assertion), first before the name, name
 // intact in the second.
 func TestShape(t *testing.T) {
 	hello := clientHello("www.example.com")

@@ -65,10 +65,10 @@
 package mirage
 
 import (
-	"encoding/binary"
 	"net"
 	"os"
 	"strconv"
+	"sync"
 )
 
 const (
@@ -120,49 +120,62 @@ func Wrap(conn net.Conn) net.Conn {
 // through untouched.
 type Conn struct {
 	net.Conn
-	offset       int
-	firstWritten bool
+	offset         int
+	firstWritten   bool
+	writeMu        sync.Mutex
+	writeErr       error
+	appliedOffset  int
+	appliedRecords int
+	recordCount    int
+	coalesced      bool
 }
 
 func NewConn(conn net.Conn, offset int) *Conn {
+	return NewConnWithOptions(conn, offset, records, coalesce)
+}
+
+func NewConnWithOptions(conn net.Conn, offset, count int, coalesced bool) *Conn {
 	if offset <= 0 {
 		offset = defaultOffset
 	}
-	return &Conn{Conn: conn, offset: offset}
+	return &Conn{Conn: conn, offset: offset, recordCount: count, coalesced: coalesced}
 }
 
 func (c *Conn) Write(b []byte) (int, error) {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	if c.writeErr != nil {
+		return 0, c.writeErr
+	}
+	if len(b) == 0 {
+		return 0, nil
+	}
 	if c.firstWritten {
 		return c.Conn.Write(b)
 	}
 	c.firstWritten = true
 
-	parts, ok := splitN(b, c.offset, records)
+	parts, fragments, ok := mirageParts(b, c.offset, c.recordCount)
 	if !ok {
 		// Not something we can fragment - send it exactly as given.
 		return c.Conn.Write(b)
 	}
-	// One write per record by default. Concatenating them is the form MCI
-	// drops; see the package comment for the measurement. The panel can ask
-	// for the old shape back without a build.
-	if coalesce {
-		var all []byte
-		for _, r := range parts {
-			all = append(all, r...)
-		}
-		if _, err := c.Conn.Write(all); err != nil {
-			return 0, err
-		}
-		return len(b), nil
+	n, err := writeMirage(c.Conn, parts, fragments, c.coalesced)
+	c.writeErr = err
+	if err == nil {
+		c.appliedOffset = len(parts[0]) - recordHeaderLen
+		c.appliedRecords = fragments
 	}
-	for _, r := range parts {
-		if _, err := c.Conn.Write(r); err != nil {
-			return 0, err
-		}
-	}
-	// Report the caller's length: from their point of view the whole buffer
-	// was written, which is what io.Writer promises.
-	return len(b), nil
+	return n, err
+}
+
+// AppliedShape reports what this connection really emitted, not merely the
+// requested settings. Unsupported/partial hellos and failed writes report false.
+// A future probe driver must check this before crediting a strategy with success.
+func (c *Conn) AppliedShape() (offset, records int, coalesce, ok bool) {
+	c.writeMu.Lock()
+	defer c.writeMu.Unlock()
+	return c.appliedOffset, c.appliedRecords, c.coalesced, c.appliedRecords >= 2 && c.writeErr == nil
 }
 
 func (c *Conn) Upstream() any { return c.Conn }
@@ -174,144 +187,17 @@ func (c *Conn) Upstream() any { return c.Conn }
 // name, never out of the name itself: a cut inside the server name is the one
 // shape measured to be dropped even for a hostname that is otherwise allowed.
 func splitN(record []byte, off, n int) ([][]byte, bool) {
-	first, second, ok := split(record, off)
-	if !ok {
-		return nil, false
-	}
-	parts := [][]byte{first, second}
-	// Re-cut the tail, which is a complete record, into n-1 pieces.
-	for len(parts) < n {
-		tail := parts[len(parts)-1]
-		body := tail[recordHeaderLen:]
-		if len(body) < 2 {
-			break // nothing left worth cutting
-		}
-		at := len(body) / 2
-		parts = parts[:len(parts)-1]
-		parts = append(parts,
-			appendRecord(make([]byte, 0, recordHeaderLen+at), tail[:3], body[:at]),
-			appendRecord(make([]byte, 0, recordHeaderLen+len(body)-at), tail[:3], body[at:]))
-	}
-	return parts, true
+	parts, _, ok := mirageParts(record, off, n)
+	return parts, ok
 }
 
-// split rewrites a ClientHello record into two records, the first ending
-// before the server name, returned separately so the caller can write each in
-// its own segment.
-func split(record []byte, off int) ([]byte, []byte, bool) {
-	if off <= 0 {
-		off = defaultOffset
-	}
-	if len(record) <= recordHeaderLen || record[0] != recordHandshake {
-		return nil, nil, false
-	}
-	hs := record[recordHeaderLen:]
-	if len(hs) == 0 || hs[0] != handshakeHello {
-		return nil, nil, false
-	}
-	sni := indexSNI(hs)
-	if sni < 0 {
-		// No server name to hide, so there is nothing to gain.
-		return nil, nil, false
-	}
-	at := off
-	if at >= sni {
-		at = sni / 2
-	}
-	if at <= 0 || at >= len(hs) {
-		return nil, nil, false
-	}
-
-	first := appendRecord(make([]byte, 0, recordHeaderLen+at), record[:3], hs[:at])
-	second := appendRecord(make([]byte, 0, recordHeaderLen+len(hs)-at), record[:3], hs[at:])
-	return first, second, true
-}
-
-func appendRecord(dst, headerPrefix, payload []byte) []byte {
-	dst = append(dst, headerPrefix...)
-	dst = binary.BigEndian.AppendUint16(dst, uint16(len(payload)))
-	return append(dst, payload...)
-}
-
-// indexSNI returns the offset of the server name inside a handshake message,
-// or -1 when there is none. It refuses to read past the buffer.
+// indexSNI uses the same bounded parser as the production wire codec.
 func indexSNI(hs []byte) int {
-	r := reader{b: hs}
-	if !r.skip(4) || !r.skip(2+32) { // handshake header, client_version, random
+	start, _, ok := mirageNameRange(hs)
+	if !ok {
 		return -1
 	}
-	if !r.skipVector(1) || !r.skipVector(2) || !r.skipVector(1) { // session id, ciphers, compression
-		return -1
-	}
-	if !r.skip(2) { // extensions length
-		return -1
-	}
-	for r.remaining() >= 4 {
-		extType, ok := r.uint16()
-		if !ok {
-			return -1
-		}
-		extLen, ok := r.uint16()
-		if !ok || r.remaining() < int(extLen) {
-			return -1
-		}
-		if extType != extServerName {
-			r.skip(int(extLen))
-			continue
-		}
-		if !r.skip(2) || !r.skip(1) { // list length, name type
-			return -1
-		}
-		nameLen, ok := r.uint16()
-		if !ok || nameLen == 0 || r.remaining() < int(nameLen) {
-			return -1
-		}
-		return r.pos
-	}
-	return -1
-}
-
-type reader struct {
-	b   []byte
-	pos int
-}
-
-func (r *reader) remaining() int { return len(r.b) - r.pos }
-
-func (r *reader) skip(n int) bool {
-	if n < 0 || r.remaining() < n {
-		return false
-	}
-	r.pos += n
-	return true
-}
-
-func (r *reader) uint16() (uint16, bool) {
-	if r.remaining() < 2 {
-		return 0, false
-	}
-	v := binary.BigEndian.Uint16(r.b[r.pos:])
-	r.pos += 2
-	return v, true
-}
-
-func (r *reader) skipVector(sizeLen int) bool {
-	switch sizeLen {
-	case 1:
-		if r.remaining() < 1 {
-			return false
-		}
-		n := int(r.b[r.pos])
-		r.pos++
-		return r.skip(n)
-	case 2:
-		n, ok := r.uint16()
-		if !ok {
-			return false
-		}
-		return r.skip(int(n))
-	}
-	return false
+	return start
 }
 
 func envBool(key string, def bool) bool {
