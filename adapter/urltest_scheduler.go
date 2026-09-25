@@ -11,7 +11,13 @@ import (
 // All Proxy.URLTest entry points (API, groups and provider checks) share this
 // gate. These are resource/pacing defaults, NOT a measured safe carrier rate.
 // No burst tokens accumulate while idle. Normal proxy traffic is unaffected.
-var sharedURLTests = newURLTestScheduler(4, 250*time.Millisecond)
+// Ten slots (was four, 2026-09-25, owner: "the same ten as sing-box"): a
+// dead node holds a slot for its whole budget, so four slots let two or three
+// dead nodes stall a sweep. The 250 ms admission spacing is unchanged - it is
+// the RATE of new handshakes, and a burst of them is what Hamrah-e Aval
+// punishes (measured 2026-09-09: six quick handshakes, then ~1 min of failed
+// connects).
+var sharedURLTests = newURLTestScheduler(10, 250*time.Millisecond)
 
 type urlTestKey struct {
 	proxy         *Proxy
