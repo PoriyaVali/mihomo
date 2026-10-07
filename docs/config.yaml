@@ -133,7 +133,7 @@ profile: # 存储 select 选择记录
 # Tun 配置
 tun:
   enable: false
-  stack: system # gvisor/mixed
+  stack: mips # gvisor/mixed/system
   dns-hijack:
     - 0.0.0.0:53 # 需要劫持的 DNS
   # auto-detect-interface: true # 自动识别出口网卡
@@ -144,6 +144,7 @@ tun:
   auto-redirect: false # 自动配置 iptables 以重定向 TCP 连接。仅支持 Linux。带有 auto-redirect 的 auto-route 现在可以在路由器上按预期工作，无需干预。
   # strict-route: true # 将所有连接路由到 tun 来防止泄漏，但你的设备将无法其他设备被访问
   # disable-icmp-forwarding: true # 禁用 ICMP 转发，防止某些情况下的 ICMP 环回问题，ping 将不会显示真实的延迟
+  # congestion-controller: cubic # TCP congestion controller: cubic, reno, bbr, or bbr3; only effective on mips
   route-address-set: # 将指定规则集中的目标 IP CIDR 规则添加到防火墙, 不匹配的流量将绕过路由, 仅支持 Linux，且需要 nftables，`auto-route` 和 `auto-redirect` 已启用。
     - ruleset-1
     - ruleset-2
@@ -314,6 +315,7 @@ dns:
     - dhcp://en0 # dns from dhcp
     - quic://dns.adguard.com:784 # DNS over QUIC
     # - ts://tailscale # 使用指定 Tailscale 出站的 DNS 配置查询
+    # - et://easytier # 仅解析 overlay A/PTR；建议放在 nameserver-policy
     # - '8.8.8.8#RULES' # 效果同respect-rules，但仅对该服务器生效
     # - '8.8.8.8#en0' # 兼容指定 DNS 出口网卡
 
@@ -1270,6 +1272,7 @@ proxies: # socks5
     #   # skip-cert-verify： false
     #   # name-cert-verify: example.com # 仅修改证书 DNSName 校验目标，不修改 SNI
     #   # ......
+    # handshake-timeout: 30 # 单位为秒；配置后握手时不受外层连接超时影响；默认值为 0，表示仅使用外层连接超时
     ###quic-go特殊配置项，不要随意修改除非你知道你在干什么###
     # initial-stream-receive-window： 8388608
     # max-stream-receive-window： 8388608
@@ -1291,6 +1294,9 @@ proxies: # socks5
     # 数组格式也是合法的
     # reserved: [209,98,59]
     # persistent-keepalive: 0
+    # ip-stack:
+    #   mode: auto # options: auto, mips, gvisor; auto uses mihomo IP stack (MIPS), gvisor needs compiled with -tags with_gvisor
+    #   congestion-controller: cubic # TCP congestion controller: cubic, reno, bbr, or bbr3; ignored by gVisor
     # 一个出站代理的标识。当值不为空时，将使用指定的 proxy 发出连接
     # dialer-proxy: "ss1"
     # remote-dns-resolve: true # 强制 dns 远程解析，默认值为 false
@@ -1306,30 +1312,37 @@ proxies: # socks5
     #     reserved: [209,98,59]
     # 如果存在则开启AmneziaWG功能
     # amnezia-wg-option:
-    #   jc: 5
-    #   jmin: 500
-    #   jmax: 501
-    #   s1: 30
-    #   s2: 40
-    #   s3: 50                                            # AmneziaWG v1.5 and v2
-    #   s4: 5                                             # AmneziaWG v1.5 and v2
-    #   h1: 123456                                        # AmneziaWG v1.0 and v1.5
-    #   h2: 67543                                         # AmneziaWG v1.0 and v1.5
-    #   h3: 123123                                        # AmneziaWG v1.0 and v1.5
-    #   h4: 32345                                         # AmneziaWG v1.0 and v1.5
-    #   h1: 123456-123500                                 # AmneziaWG v2.0 only
-    #   h2: 67543-67550                                   # AmneziaWG v2.0 only
-    #   h3: 123123-123200                                 # AmneziaWG v2.0 only
-    #   h4: 32345-32350                                   # AmneziaWG v2.0 only
-    #   i1: <b 0xf6ab3267fa><c><b 0xf6ab><t><r 10><wt 10> # AmneziaWG v1.5 and v2
-    #   i2: <b 0xf6ab3267fa><r 100>                       # AmneziaWG v1.5 and v2
-    #   i3: ""                                            # AmneziaWG v1.5 and v2
-    #   i4: ""                                            # AmneziaWG v1.5 and v2
-    #   i5: ""                                            # AmneziaWG v1.5 and v2
-    #   j1: <b 0xffffffff><c><b 0xf6ab><t><r 10>          # AmneziaWG v1.5 only (removed in v2)
-    #   j2: <c><b 0xf6ab><t><wt 1000>                     # AmneziaWG v1.5 only (removed in v2)
-    #   j3: <t><b 0xf6ab><c><r 10>                        # AmneziaWG v1.5 only (removed in v2)
-    #   itime: 60                                         # AmneziaWG v1.5 only (removed in v2)
+    #   version: 2                                        # Only version 3 uses the v3 implementation; all other values use the legacy implementation
+    #   jc: 5                                             # AmneziaWG v1.0+
+    #   jmin: 500                                         # AmneziaWG v1.0+
+    #   jmax: 501                                         # AmneziaWG v1.0+
+    #   s1: 30                                            # AmneziaWG v1.0+
+    #   s2: 40                                            # AmneziaWG v1.0+
+    #   s3: 50                                            # AmneziaWG v1.5+
+    #   s4: 8                                             # AmneziaWG v1.5+
+    #   h1: 123456                                        # AmneziaWG v1.0/v1.5 support single values only; v2+ also supports ranges
+    #   h2: 67543                                         # AmneziaWG v1.0/v1.5 support single values only; v2+ also supports ranges
+    #   h3: 123123                                        # AmneziaWG v1.0/v1.5 support single values only; v2+ also supports ranges
+    #   h4: 32345                                         # AmneziaWG v1.0/v1.5 support single values only; v2+ also supports ranges
+    #   i1: <b 0xf6ab3267fa><b 0xf6ab><t><r 10>           # AmneziaWG v1.5+
+    #   i2: <b 0xf6ab3267fa><r 100>                       # AmneziaWG v1.5+
+    #   i3: ""                                            # AmneziaWG v1.5+
+    #   i4: ""                                            # AmneziaWG v1.5+
+    #   i5: ""                                            # AmneziaWG v1.5+
+    #   j1: <b 0xffffffff><c><b 0xf6ab><t><r 10>          # AmneziaWG v1.5 only (removed in v2+)
+    #   j2: <c><b 0xf6ab><t><wt 1000>                     # AmneziaWG v1.5 only (removed in v2+)
+    #   j3: <t><b 0xf6ab><c><r 10>                        # AmneziaWG v1.5 only (removed in v2+)
+    #   itime: 60                                         # AmneziaWG v1.5 only (removed in v2+)
+    #   header-protection-key: >-                         # AmneziaWG v3+
+    #     MDEyMzQ1Njc4OWFiY2RlZjAxMjM0NTY3ODlhYmNkZWY=
+    #   content-padding-addition: 0-32                    # AmneziaWG v3+
+    #   rekey-after-time: 120                             # AmneziaWG v3+
+    #   rekey-timeout: 5                                  # AmneziaWG v3+
+    #   reject-after-time: 180                            # AmneziaWG v3+
+    #   keepalive-timeout: 10                             # AmneziaWG v3+
+    #   max-handshake-attempts: 18                        # AmneziaWG v3+
+    #   random-trailers: true                             # AmneziaWG v3.1+
+    #   disable-cookies: true                             # AmneziaWG v3.1+
 
   # tailscale
   - name: "tailscale"
@@ -1350,6 +1363,79 @@ proxies: # socks5
     # interface-name: "WLAN" # 指定出站网卡
     # routing-mark: 6666 # Linux 下配置 fwmark
     # ip-version: ipv4-prefer # 可选：dual/ipv4/ipv6/ipv4-prefer/ipv6-prefer
+
+  # zerotier
+  - name: "zerotier"
+    type: zerotier
+    network: "0123456789abcdef" # 16-digit ZeroTier network ID
+    # state-dir: ./zerotier-node # persistent node state and default identity; defaults to an isolated directory derived from network and outbound name
+    # identity-secret: "0123456789:0:public-key:private-key" # complete identity.secret contents; overrides the identity in state-dir and is not written there
+    # planet: ./planet # optional private planet file; replaces the built-in Earth planet
+    # mtu: 1400 # optional local MTU override; cannot exceed the controller MTU
+    # physical-mtu: 1432 # optional ZeroTier UDP payload MTU (510-10324; default 1432)
+    # ip-stack:
+    #   mode: auto # options: auto, mips, gvisor; auto uses mihomo IP stack (MIPS), gvisor needs compiled with -tags with_gvisor
+    #   congestion-controller: cubic # TCP congestion controller: cubic, reno, bbr, or bbr3; ignored by gVisor
+    # primary-port: 0 # primary UDP port; 0 selects an available port
+    # secondary-port: 0 # second UDP port; 0 selects an available port, -1 disables it
+    # tcp-fallback-mode: auto # auto uses relay after UDP failure; force uses relay only; disable turns relay off
+    # tcp-fallback-relay: 204.80.128.1:443
+    # remote-trace-target: "0123456789" # optional node ID receiving global diagnostic traces
+    # remote-trace-level: 0 # 0 normal, 10 verbose, 15 rules, 20 debug, 30 insane
+    # low-bandwidth: false # reduce background traffic and network configuration refresh frequency
+    # encrypted-hello: false # use protocol-13 extended encryption for outgoing HELLO packets
+    # orbit: # optional federated root worlds (moons)
+    #   - world: "0123456789abcdef" # 16-digit moon world ID
+    #     seed: "0123456789" # 10-digit node ID of one moon root
+    udp: true
+    # remote-dns-resolve: true # resolve destination names through ZeroTier using controller-provided DNS servers
+    # dns: [10.147.17.1] # optional override for controller-provided DNS servers
+    # dialer-proxy: "ss1" # carry ZeroTier wire traffic through another outbound
+    # interface-name: "WLAN"
+    # routing-mark: 6666
+    # ip-version: ipv4-prefer
+
+  # easytier
+  # overlay 仅支持 IPv4；ip-version 只影响底层 peer 连接，不启用 overlay IPv6
+  - name: "easytier"
+    type: easytier
+    network-name: example
+    network-secret: secret
+    # hostname: mihomo
+    # ipv4: 10.144.0.1/24
+    # dhcp: true # ipv4 为空时默认开启，否则实例没有 overlay IPv4
+    peers: # 可配置多个入口；默认不隐式连接 public.easytier.top；无 listeners 时至少填一个
+      - tcp://192.0.2.10:11010
+      - udp://192.0.2.11:11010
+      # - "tcp://relay.example.com:11010?peer-public-key=base64-x25519-public-key" # 锁定共享节点公钥，防止中间人
+    # secure-mode: true # Noise E2EE；配置 local-*-key 或 peer URI 中的 peer-public-key 时会自动开启
+    # local-private-key: "base64-x25519-private-key" # 可选，固定本机身份，避免每次启动更换公钥
+    # local-public-key: "base64-x25519-public-key" # 可选，通常可由私钥派生
+    # listeners: ["tcp://0.0.0.0:11010"]
+    # no-listener: true # 默认 true，listeners 为空
+    # mapped-listeners: ["tcp://203.0.113.10:11010"]
+    # exit-nodes: ["10.144.0.1"]
+    # proxy-networks: ["10.0.0.0/24"]
+    # instance-name: mihomo-easytier
+    # state-dir: ./easytier # 默认 easytier/<name>，用于持久化 instance_id
+    udp: true
+    # accept-dns: false
+    # enable-exit-node: false
+    # enable-encryption: true
+    # encryption-algorithm: aes-gcm
+    # private-mode: false
+    # latency-first: false
+    # disable-p2p: false
+    # enable-kcp-proxy: false
+    # disable-kcp-input: false
+    # enable-quic-proxy: false
+    # disable-quic-input: false
+    # mtu: 1380
+    # tld-dns-zone: et.net.
+    # dialer-proxy: "ss1"
+    # interface-name: "WLAN"
+    # routing-mark: 6666
+    # ip-version: ipv4-prefer
 
   # openvpn
   - name: "openvpn"
@@ -1404,9 +1490,13 @@ proxies: # socks5
     #   UV_DEVICE_ID: "laptop-001"
     # ping: 10 # 默认值为 0
     # ping-restart: 60 # 默认值为 0
+    # tran-window: 3600 # 旧 data key 在 rekey 后保留的秒数；默认 3600，显式设为 0 表示立即过期，应与服务端 --tran-window 对齐
     # handshake-timeout: 30 # 单位为秒；配置后握手时不受外层连接超时影响；默认值为 0，表示仅使用外层连接超时
     # mtu: 1500
     udp: true
+    # ip-stack:
+    #   mode: auto # options: auto, mips, gvisor; auto uses mihomo IP stack (MIPS), gvisor needs compiled with -tags with_gvisor
+    #   congestion-controller: cubic # TCP congestion controller: cubic, reno, bbr, or bbr3; ignored by gVisor
     # 一个出站代理的标识。当值不为空时，将使用指定的 proxy 发出连接
     # dialer-proxy: "ss1"
     # remote-dns-resolve: true # 强制 dns 远程解析，默认值为 false
@@ -1423,6 +1513,9 @@ proxies: # socks5
     ipv6: 2606:4700:110:84c0:163a:4914:a0ad:3342
     mtu: 1280
     udp: true
+    # ip-stack:
+    #   mode: auto # options: auto, mips, gvisor; auto uses mihomo IP stack (MIPS), gvisor needs compiled with -tags with_gvisor
+    #   congestion-controller: cubic # TCP congestion controller: cubic, reno, bbr, or bbr3; ignored by gVisor
     # 一个出站代理的标识。当值不为空时，将使用指定的 proxy 发出连接
     # dialer-proxy: "ss1"
     # remote-dns-resolve: true # 强制 dns 远程解析，默认值为 false
@@ -1458,6 +1551,9 @@ proxies: # socks5
     mtu: 1280
     udp: true
     network: h2
+    # ip-stack:
+    #   mode: auto # options: auto, mips, gvisor; auto uses mihomo IP stack (MIPS), gvisor needs compiled with -tags with_gvisor
+    #   congestion-controller: cubic # TCP congestion controller: cubic, reno, bbr, or bbr3; ignored by gVisor
     # 一个出站代理的标识。当值不为空时，将使用指定的 proxy 发出连接
     # dialer-proxy: "ss1"
     # remote-dns-resolve: true # 强制 dns 远程解析，默认值为 false
@@ -1552,7 +1648,7 @@ proxies: # socks5
     port: 22
     username: root
     password: password
-    privateKey: path
+    private-key: path
 
   # mieru
   - name: mieru
@@ -1602,6 +1698,7 @@ proxies: # socks5
     password: "<your password>"
     # client-fingerprint: chrome
     udp: true
+    # client-metadata: "" # 发送给服务端的客户端元数据，由于这可能被用于统计客户端信息并区别对待，从v1.19.30开始默认再不发送该内容，如果需要请自行填写
     # idle-session-check-interval: 30 # seconds
     # idle-session-timeout: 30 # seconds
     # min-idle-session: 0
@@ -1694,6 +1791,15 @@ proxy-groups:
     url: "https://cp.cloudflare.com/generate_204"
     interval: 300
   # strategy: consistent-hashing # 可选 round-robin 和 sticky-sessions
+  # hash-key: in-user # 可选,仅 consistent-hashing 和 sticky-sessions 支持;
+  #                   # round-robin 不做哈希,配置它会报错而不是被忽略。
+  #                   # 只改变「拿什么值去哈希」,不改变策略拿到哈希值之后如何选节点;
+  #                   # 不填时行为与旧版完全一致。
+  #                   # in-user 用 inbound 的认证用户名作 key(与 IN-USER 规则读取的是
+  #                   # 同一个字段),它不随目标地址变化,因此一件跨多个域名的任务不会
+  #                   # 中途换节点、换出口 IP。未认证的请求回退到该策略原本的 key。
+  #                   # 两种策略给出的一致性时长不同(前者永久、后者 10 分钟),
+  #                   # 取舍见 PR #3133。
 
   # select 用户自行选择节点
   - name: Proxy
@@ -2039,6 +2145,7 @@ listeners:
     #   restls-script: ""
     #   min-record-len: 0
     #   proxy: ""
+    #   rate-limit: 0 # fallback 双向转发限速，单位 bit/s；0 表示不限速
     # jls-config: # 仅封装 TCP；JLS 认证失败或普通 TLS 连接会透明回落到 dest
     #   enable: false
     #   users:
@@ -2100,6 +2207,7 @@ listeners:
     #   enable: false
     #   dest: test.com:443
     #   password: restls-password
+    #   rate-limit: 0 # fallback 双向转发限速，单位 bit/s；0 表示不限速
     # jls-config:
     #   enable: false
     #   users:
@@ -2192,6 +2300,7 @@ listeners:
     #   # restls-script: ""
     #   # min-record-len: 0
     #   # proxy: ""
+    #   # rate-limit: 0 # fallback 双向转发限速，单位 bit/s；0 表示不限速
     # 如果填写reality-config则开启reality（注意不可与certificate和private-key同时填写）
     # reality-config:
     #   dest: test.com:443
@@ -2272,10 +2381,9 @@ listeners:
       # sni: example.com # JLS 伪装目标 SNI，留空时从 addr 推导
       # proxy: proxy # 伪装上游使用的代理
       # rate-limit: 0 # 转发限速，单位 bit/s，0 表示不限速
-      # quic-version-probe: false # 在首次连接时探测伪装上游版本
     # alpn:
     #   - h3
-    # quic-versions: [v1] # 本机手动配置及探测失败时的版本；支持 v1/v2
+    # quic-versions: [v1] # 本机支持的 QUIC 版本；支持 v1/v2
     # zero-rtt: true
     # congestion-controller: bbr # Available: "cubic", "new_reno", "bbr". Default: "cubic"
     # up: 100 Mbps # enables brutal negotiation via a mihomo private extension; server upload/client download speed cap; falls back to congestion-controller when unsupported
@@ -2407,6 +2515,7 @@ listeners:
     #   # restls-script: ""
     #   # min-record-len: 0
     #   # proxy: ""
+    #   # rate-limit: 0 # fallback 双向转发限速，单位 bit/s；0 表示不限速
     ### 注意，对于vless listener, 如果 "allow-insecure" 不为 true, 至少需要填写 “certificate和private-key” 或 “shadow-tls” 或 “res-tls” 或 “jls-config” 或 “reality-config” 或 “decryption” 的其中一项 ###
     # allow-insecure: false # 是否允许不开启tls加密（注意：仅用于有 nginx, caddy 前置的情况）
 
@@ -2448,6 +2557,7 @@ listeners:
     #   # restls-script: ""
     #   # min-record-len: 0
     #   # proxy: ""
+    #   # rate-limit: 0 # fallback 双向转发限速，单位 bit/s；0 表示不限速
     # jls-config: # JLS 替代普通 TLS；未认证连接回落到 dest
     #   enable: true
     #   users:
@@ -2542,6 +2652,7 @@ listeners:
     #   # restls-script: ""
     #   # min-record-len: 0
     #   # proxy: ""
+    #   # rate-limit: 0 # fallback 双向转发限速，单位 bit/s；0 表示不限速
     # jls-config: # JLS 替代普通 TLS；未认证连接回落到 dest
     #   enable: true
     #   users:
@@ -2687,7 +2798,7 @@ listeners:
     type: tun
     # rule: sub-rule-name1 # 默认使用 rules，如果未找到 sub-rule 则直接使用 rules
     # proxy: proxy # 如果不为空则直接将该入站流量交由指定 proxy 处理 (当 proxy 不为空时，这里的 proxy 名称必须合法，否则会出错)
-    stack: system # gvisor / mixed
+    stack: mips # gvisor / mixed / system
     dns-hijack:
     - 0.0.0.0:53 # 需要劫持的 DNS
     # auto-detect-interface: false # 自动识别出口网卡
@@ -2729,6 +2840,7 @@ listeners:
     # exclude-package: # 排除被路由的 Android 应用包名
     # - com.android.captiveportallogin
     # disable-icmp-forwarding: true # 禁用 ICMP 转发，防止某些情况下的 ICMP 环回问题，ping 将不会显示真实的延迟
+    # congestion-controller: cubic # TCP congestion controller: cubic, reno, bbr, or bbr3; only effective on mips
 # 入口配置与 Listener 等价，传入流量将和 socks,mixed 等入口一样按照 mode 所指定的方式进行匹配处理
 # shadowsocks,vmess 入口配置（传入流量将和 socks,mixed 等入口一样按照 mode 所指定的方式进行匹配处理）
 # ss-config: ss://2022-blake3-aes-256-gcm:vlmpIPSyHH6f4S8WVPdRIHIlzmB+GIRfoH3aNJ/t9Gg=@:23456

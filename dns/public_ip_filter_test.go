@@ -153,3 +153,44 @@ func TestPublicIPFilterWiringPreservesUnfilteredLAN(t *testing.T) {
 		}
 	}
 }
+
+func rawDNSClient(c dnsClient) dnsClient {
+	for {
+		u, ok := c.(interface{ Unwrap() dnsClient })
+		if !ok {
+			return c
+		}
+		c = u.Unwrap()
+	}
+}
+
+func TestPublicIPFilterRewrapsOverSharedTransport(t *testing.T) {
+	ns := func(params map[string]string) NameServer {
+		return NameServer{Net: "udp", Addr: "192.0.2.53:53", Params: params}
+	}
+	rs := NewResolver(Config{Main: []NameServer{
+		ns(map[string]string{"dm-public-ip": "true", "ecs": "203.0.113.0/24"}),
+		ns(map[string]string{"dm-public-ip": "true"}),
+		ns(map[string]string{}),
+	}})
+	main := rs.Resolver.main
+	if len(main) != 3 {
+		t.Fatalf("got %d clients", len(main))
+	}
+	raw := rawDNSClient(main[0])
+	for i, c := range main {
+		if rawDNSClient(c) != raw {
+			t.Fatalf("client %d did not reuse the shared transport", i)
+		}
+	}
+	filtered, ok := main[1].(publicIPClient)
+	if !ok {
+		t.Fatalf("dm-public-ip lost on a reused transport: %T", main[1])
+	}
+	if filtered.dnsClient != raw {
+		t.Fatalf("another server's wrappers leaked in: %T", filtered.dnsClient)
+	}
+	if _, ok := main[2].(publicIPClient); ok {
+		t.Fatal("dm-public-ip leaked to a server without it")
+	}
+}
