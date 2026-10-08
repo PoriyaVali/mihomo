@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 	"time"
@@ -618,6 +619,9 @@ func NewVless(option VlessOption) (*Vless, error) {
 			} else {
 				requestHost = v.option.Server
 			}
+			if ip, err := netip.ParseAddr(requestHost); err == nil && ip.Is6() {
+				requestHost = "[" + requestHost + "]"
+			}
 		}
 
 		var hKeepAlivePeriod time.Duration
@@ -701,7 +705,7 @@ func NewVless(option VlessOption) (*Vless, error) {
 					if err != nil {
 						return nil, err
 					}
-					_, quicConn, err := common.DialQuic(ctx, v.addr, v.DialOptions(), v.dialer, tlsConfig, cfg, true)
+					_, quicConn, err := common.DialQuic(ctx, v.addr, v.DialOptions(), v.dialer, tlsConfig, cfg, common.DialQuicOption{Early: true})
 					if err != nil {
 						return nil, err
 					}
@@ -797,6 +801,9 @@ func NewVless(option VlessOption) (*Vless, error) {
 				} else {
 					downloadHost = downloadServer
 				}
+				if ip, err := netip.ParseAddr(downloadHost); err == nil && ip.Is6() {
+					downloadHost = "[" + downloadHost + "]"
+				}
 			}
 
 			downloadHKeepAlivePeriod := hKeepAlivePeriod
@@ -889,7 +896,7 @@ func NewVless(option VlessOption) (*Vless, error) {
 						if err != nil {
 							return nil, err
 						}
-						_, quicConn, err := common.DialQuic(ctx, downloadAddr, v.DialOptions(), v.dialer, tlsConfig, cfg, true)
+						_, quicConn, err := common.DialQuic(ctx, downloadAddr, v.DialOptions(), v.dialer, tlsConfig, cfg, common.DialQuicOption{Early: true})
 						if err != nil {
 							return nil, err
 						}

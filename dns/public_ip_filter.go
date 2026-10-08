@@ -30,12 +30,18 @@ func isPublicDNSAddress(ip netip.Addr) bool {
 		!reservedIPv4Range.Contains(ip) && !unspecifiedIPv4Range.Contains(ip)
 }
 
+// isPublicIPFilterParam reports the params consumed by wrapClientWithPublicIPFilter.
+// The filter only inspects replies, so it never changes the transport itself.
+func isPublicIPFilterParam(key string) bool { return key == "dm-public-ip" }
+
 func wrapClientWithPublicIPFilter(c dnsClient, params map[string]string) dnsClient {
 	if params["dm-public-ip"] == "true" {
 		return publicIPClient{c}
 	}
 	return c
 }
+
+func (c publicIPClient) Unwrap() dnsClient { return c.dnsClient }
 
 func (c publicIPClient) ExchangeContext(ctx context.Context, q *D.Msg) (*D.Msg, error) {
 	msg, err := c.dnsClient.ExchangeContext(ctx, q)

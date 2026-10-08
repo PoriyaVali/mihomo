@@ -2,7 +2,7 @@
 
 This is the Doctor Mobile fork of [MetaCubeX/mihomo](https://github.com/MetaCubeX/mihomo),
 built and shipped ourselves so our app owns its VPN core. Based on the official
-release **v1.19.29**. Development happens on the [`doctormobile`](../../tree/doctormobile) branch.
+release **v1.19.32**. Development happens on the [`doctormobile`](../../tree/doctormobile) branch.
 
 ### Our changes
 - **Opt-in public-domain DNS validation**: append `#dm-public-ip=true` to
