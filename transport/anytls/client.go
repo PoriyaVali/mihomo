@@ -70,6 +70,7 @@ func (c *Client) createOutboundTLSConnection(ctx context.Context) (net.Conn, err
 	if err != nil {
 		return nil, err
 	}
+	limitUnsent(conn)
 
 	b := buf.NewPacket()
 	defer b.Release()

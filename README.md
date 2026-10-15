@@ -23,6 +23,23 @@ release **v1.19.32**. Development happens on the [`doctormobile`](../../tree/doc
   upstream mihomo's `AnyTLSOption` has no REALITY, so anytls+REALITY nodes could
   never connect. The TLS path anytls already uses supports REALITY, so we just
   expose `reality-opts` and wire it through.
+- **`anytls`: hold sessions together on weak and lossy links** — measured with
+  a packet-level emulator of Iranian mobile paths (300-440 ms RTT, bursty
+  loss, outages):
+  - a stream closed during an upload no longer cuts that upload and closes
+    the session: a FIN's 5 s write deadline used to be set on the whole
+    connection before it waited for the write lock;
+  - a reused session waits for its SYNACK as long as this link's SYNACKs
+    actually take (3-12 s), instead of a fixed 3 s that closed live sessions
+    and failed the request;
+  - a handshake that outlasts the 5 s proxy dial deadline finishes in the
+    background and serves the next request, instead of every request starting
+    a handshake that is cut off;
+  - the session's socket holds at most 16 KiB unsent (`TCP_NOTSENT_LOWAT`), so
+    a cancelled upload does not leave seconds of dead data ahead of the next
+    request on that session;
+  - a write that has stopped moving for 30 s, not one that is merely slow,
+    closes the session.
 - **CI**: [`android-dm.yml`](../../blob/doctormobile/.github/workflows/android-dm.yml)
   builds `libmihomo.so` for android arm64 / armv7 / x86_64.
 
