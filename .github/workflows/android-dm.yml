@@ -8,7 +8,13 @@ on:
   push:
     branches: [doctormobile]
     tags: ['v*-dm*']
+  # A run by hand can publish too: the release job creates the tag from the
+  # commit it built. For sessions that may push branches but not tags.
   workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Publish a release under this new tag (e.g. v1.19.32-dm2). Empty: build only.'
+        default: ''
 
 jobs:
   build:
@@ -35,7 +41,8 @@ jobs:
         with: { ndk-version: r28, add-to-path: false }
       - name: Build libmihomo.so
         run: |
-          VER="$(git describe --tags --always 2>/dev/null)"
+          VER="${{ inputs.tag }}"
+          [ -n "$VER" ] || VER="$(git describe --tags --always 2>/dev/null)"
           export GOOS=android GOARCH=${{ matrix.goarch }} GOARM=${{ matrix.goarm }} CGO_ENABLED=${{ matrix.cgo }}
           if [ "${{ matrix.cgo }}" = "1" ]; then
             export CC="${{ steps.ndk.outputs.ndk-path }}/toolchains/llvm/prebuilt/linux-x86_64/bin/${{ matrix.cc }}"
@@ -52,7 +59,7 @@ jobs:
           path: libmihomo-${{ matrix.abi }}.so
 
   release:
-    if: startsWith(github.ref, 'refs/tags/')
+    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.tag != '')
     needs: build
     runs-on: ubuntu-latest
     permissions:
@@ -66,5 +73,7 @@ jobs:
       - name: Publish release with per-abi binaries
         uses: softprops/action-gh-release@v2
         with:
-          tag_name: ${{ github.ref_name }}
+          tag_name: ${{ inputs.tag || github.ref_name }}
+          # A new tag from a manual run is cut here, at the commit built.
+          target_commitish: ${{ github.sha }}
           files: artifacts/libmihomo-*.so
