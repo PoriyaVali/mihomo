@@ -103,6 +103,12 @@ func (c *Client) CreateStream(ctx context.Context) (net.Conn, error) {
 
 // keepIdle puts a live session in the idle pool, or closes it when reuse is
 // off or the client has been closed.
+//
+// Whether the session is closed is checked under the pool lock. Its close
+// hook removes it from the pool under the same lock, so a session that closed
+// first - a handshake finishing just as the peer drops the connection - is
+// never inserted after its removal, where the next request would take it and
+// fail instead of dialling a new one.
 func (c *Client) keepIdle(session *Session) {
 	if c.disableReuse {
 		session.Close()
@@ -114,6 +120,10 @@ func (c *Client) keepIdle(session *Session) {
 		session.Close()
 	default:
 		c.idleSessionLock.Lock()
+		if session.IsClosed() {
+			c.idleSessionLock.Unlock()
+			return
+		}
 		session.idleSince = time.Now()
 		c.idleSession.Insert(math.MaxUint64-session.seq, session)
 		close(c.idleReady)
@@ -122,12 +132,18 @@ func (c *Client) keepIdle(session *Session) {
 	}
 }
 
+// getIdleSession takes the newest idle session, passing over any that closed
+// while its close hook has yet to remove it.
 func (c *Client) getIdleSession() (idle *Session) {
 	c.idleSessionLock.Lock()
-	if !c.idleSession.IsEmpty() {
+	for !c.idleSession.IsEmpty() {
 		it := c.idleSession.Iterate()
-		idle = it.Value()
+		session := it.Value()
 		c.idleSession.Remove(it.Key())
+		if !session.IsClosed() {
+			idle = session
+			break
+		}
 	}
 	c.idleSessionLock.Unlock()
 	return

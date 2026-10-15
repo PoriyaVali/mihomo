@@ -23,7 +23,7 @@ type Session struct {
 	conn     net.Conn
 	connLock sync.Mutex
 	// progress is when the holder of connLock took it or last handed a chunk
-	// to conn (UnixNano): how a control frame waiting for the lock tells a
+	// to conn (monoNow): how a control frame waiting for the lock tells a
 	// slow write from a stalled one.
 	progress atomic.Int64
 
@@ -37,7 +37,7 @@ type Session struct {
 
 	synDone     func()
 	synDoneLock sync.Mutex
-	// synSentAt is when the latest SYN was sent (UnixNano), and synRTT the
+	// synSentAt is when the latest SYN was sent (monoNow), and synRTT the
 	// pool's estimate of how long acknowledgements take, which sets how long
 	// a reused session may take to acknowledge a new stream.
 	synSentAt atomic.Int64
@@ -160,7 +160,7 @@ func (s *Session) OpenStream() (*Stream, error) {
 		s.synDoneLock.Unlock()
 	}
 
-	s.synSentAt.Store(time.Now().UnixNano())
+	s.synSentAt.Store(monoNow())
 	if _, err := s.writeControlFrame(newFrame(cmdSYN, sid)); err != nil {
 		return nil, err
 	}
@@ -235,7 +235,7 @@ func (s *Session) recvLoop() error {
 				s.streamLock.Unlock()
 			case cmdSYNACK: // should be client only
 				if sent := s.synSentAt.Swap(0); sent != 0 {
-					s.synRTT.observe(time.Duration(time.Now().UnixNano() - sent))
+					s.synRTT.observe(time.Duration(monoNow() - sent))
 				}
 				s.synDoneLock.Lock()
 				if s.synDone != nil {
@@ -493,7 +493,7 @@ func (s *Session) lockConnWithin(timeout time.Duration) {
 				return
 			case <-wait.C:
 			}
-			idle := time.Since(time.Unix(0, s.progress.Load()))
+			idle := time.Duration(monoNow() - s.progress.Load())
 			if idle >= timeout {
 				s.Close()
 				return
@@ -523,7 +523,7 @@ func (s *Session) writeRecord(b []byte) (int, error) {
 	}
 	n, err := s.conn.Write(b)
 	if err == nil {
-		s.progress.Store(time.Now().UnixNano())
+		s.progress.Store(monoNow())
 	}
 	return n, err
 }
@@ -542,7 +542,7 @@ func (s *Session) writeInChunks(b []byte) (n int, err error) {
 		if err != nil {
 			return n, err
 		}
-		s.progress.Store(time.Now().UnixNano())
+		s.progress.Store(monoNow())
 		b = b[len(chunk):]
 	}
 	return n, nil
@@ -558,7 +558,7 @@ func (s *Session) writeConnWithin(b []byte, timeout time.Duration) (n int, err e
 		s.connLock.Lock()
 	}
 	defer s.connLock.Unlock()
-	s.progress.Store(time.Now().UnixNano())
+	s.progress.Store(monoNow())
 
 	if timeout > 0 && !s.buffering {
 		s.conn.SetWriteDeadline(time.Now().Add(timeout))

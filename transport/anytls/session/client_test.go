@@ -3,6 +3,7 @@ package session
 import (
 	"context"
 	"io"
+	"math"
 	"net"
 	"sync/atomic"
 	"testing"
@@ -128,5 +129,58 @@ func TestSlowHandshakeWithoutReuseIsClosed(t *testing.T) {
 	c.sessionsLock.Unlock()
 	if left != 0 || idleCount(c) != 0 {
 		t.Fatalf("a session finished after its request was kept: %d live, %d idle", left, idleCount(c))
+	}
+}
+
+// A session that closed before it reached the pool - a handshake finishing
+// just as the peer drops the connection - must not be pooled after its close
+// hook ran: the next request would take it and fail instead of dialling.
+func TestClosedSessionIsNotPooled(t *testing.T) {
+	dial, dials := slowDial(t, 0)
+	c := NewClient(context.Background(), dial, defaultPadding(), "", 0, 0, 0, false)
+	defer c.Close()
+
+	session, err := c.dialSession(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	session.Close()
+	c.keepIdle(session)
+	if n := idleCount(c); n != 0 {
+		t.Fatalf("%d closed session(s) pooled", n)
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+	defer cancel()
+	st, err := c.CreateStream(ctx)
+	if err != nil {
+		t.Fatalf("the next request failed instead of dialling: %v", err)
+	}
+	st.Close()
+	if n := dials.Load(); n != 2 {
+		t.Fatalf("dialled %d times, want a new session for the next request", n)
+	}
+}
+
+// A pooled session that closed while its close hook has yet to remove it is
+// passed over, not handed to a request.
+func TestIdleSessionClosedInThePoolIsSkipped(t *testing.T) {
+	dial, _ := slowDial(t, 0)
+	c := NewClient(context.Background(), dial, defaultPadding(), "", 0, 0, 0, false)
+	defer c.Close()
+
+	conn, err := dial(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := NewClientSession(conn, defaultPadding(), "")
+	session.seq = c.sessionCounter.Add(1)
+	c.idleSessionLock.Lock()
+	c.idleSession.Insert(math.MaxUint64-session.seq, session)
+	c.idleSessionLock.Unlock()
+	session.Close() // no hook: still in the pool, as in the window before it runs
+
+	if got := c.getIdleSession(); got != nil {
+		t.Fatal("a closed session was taken from the pool")
 	}
 }
