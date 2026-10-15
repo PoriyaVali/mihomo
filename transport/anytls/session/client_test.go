@@ -74,6 +74,45 @@ func TestSlowHandshakeServesTheNextRequest(t *testing.T) {
 	}
 }
 
+// A request waiting on its own slow handshake takes a session that joins the
+// pool meanwhile: an app's retry gets the handshake its first attempt gave up
+// on as soon as it lands, not one of its own begun later.
+func TestWaitingRequestTakesASessionFromThePool(t *testing.T) {
+	dial, dials := slowDial(t, 400*time.Millisecond)
+	c := NewClient(context.Background(), dial, defaultPadding(), "", 0, 0, 0, false)
+	defer c.Close()
+
+	// The first attempt gives up at 100 ms; its handshake lands at 400 ms.
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	_, _ = c.CreateStream(ctx)
+	cancel()
+
+	// The retry, at 150 ms, begins a handshake that would land at 550 ms.
+	time.Sleep(50 * time.Millisecond)
+	start := time.Now()
+	ctx2, cancel2 := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel2()
+	st, err := c.CreateStream(ctx2)
+	if err != nil {
+		t.Fatal(err)
+	}
+	st.Close()
+	if took := time.Since(start); took > 350*time.Millisecond {
+		t.Fatalf("the retry waited %v, for a handshake of its own", took)
+	}
+	// Its own handshake is not wasted: it joins the pool too.
+	deadline := time.Now().Add(2 * time.Second)
+	for idleCount(c) < 2 {
+		if time.Now().After(deadline) {
+			t.Fatalf("%d sessions idle, want both handshakes kept", idleCount(c))
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	if n := dials.Load(); n != 2 {
+		t.Fatalf("dialled %d times, want 2", n)
+	}
+}
+
 // Without reuse there is no pool: a handshake finished too late is closed.
 func TestSlowHandshakeWithoutReuseIsClosed(t *testing.T) {
 	dial, _ := slowDial(t, 200*time.Millisecond)

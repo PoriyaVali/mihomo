@@ -34,7 +34,8 @@ release **v1.19.32**. Development happens on the [`doctormobile`](../../tree/doc
     and failed the request;
   - a handshake that outlasts the 5 s proxy dial deadline finishes in the
     background and serves the next request, instead of every request starting
-    a handshake that is cut off;
+    a handshake that is cut off; a request waiting on its own handshake takes
+    any session that joins the pool first;
   - the session's socket holds at most 16 KiB unsent (`TCP_NOTSENT_LOWAT`), so
     a cancelled upload does not leave seconds of dead data ahead of the next
     request on that session;

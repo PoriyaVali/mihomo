@@ -25,6 +25,8 @@ type Client struct {
 
 	idleSession     *skiplist.SkipList[uint64, *Session]
 	idleSessionLock sync.Mutex
+	// idleReady is closed, and replaced, whenever a session joins the pool.
+	idleReady chan struct{}
 
 	sessions     map[uint64]*Session
 	sessionsLock sync.Mutex
@@ -56,6 +58,7 @@ func NewClient(ctx context.Context, dialOut util.DialOutFunc, _padding *atomic.P
 	}
 	c.die, c.dieCancel = context.WithCancel(ctx)
 	c.idleSession = skiplist.NewSkipList[uint64, *Session]()
+	c.idleReady = make(chan struct{})
 	if !c.disableReuse {
 		util.StartRoutine(c.die, idleSessionCheckInterval, c.idleCleanup)
 	}
@@ -113,6 +116,8 @@ func (c *Client) keepIdle(session *Session) {
 		c.idleSessionLock.Lock()
 		session.idleSince = time.Now()
 		c.idleSession.Insert(math.MaxUint64-session.seq, session)
+		close(c.idleReady)
+		c.idleReady = make(chan struct{})
 		c.idleSessionLock.Unlock()
 	}
 }
@@ -147,6 +152,10 @@ func (detachedContext) Err() error                  { return nil }
 // The handshake now goes on after the request has given up, within
 // sessionDialTimeout, and the session it makes waits in the idle pool for the
 // request that follows - apps and browsers retry a failed connection.
+//
+// While it waits, the request also takes any session that joins the pool -
+// one freed by another stream, or a handshake an earlier request gave up on -
+// rather than wait for its own, which then joins the pool in turn.
 func (c *Client) createSession(ctx context.Context) (*Session, error) {
 	type dialed struct {
 		session *Session
@@ -168,21 +177,39 @@ func (c *Client) createSession(ctx context.Context) (*Session, error) {
 		session, err := c.dialSession(dctx)
 		done <- dialed{session, err}
 	}()
-	select {
-	case d := <-done:
-		return d.session, d.err
-	case <-ctx.Done():
+	poolLater := func() {
+		go func() {
+			if d := <-done; d.session != nil {
+				c.keepIdle(d.session)
+			}
+		}()
+	}
+	for {
+		var ready chan struct{} // nil, never ready, without a pool
+		if !c.disableReuse {
+			c.idleSessionLock.Lock()
+			ready = c.idleReady
+			c.idleSessionLock.Unlock()
+		}
+		select {
+		case d := <-done:
+			return d.session, d.err
+		case <-ready:
+			if session := c.getIdleSession(); session != nil {
+				poolLater()
+				return session, nil
+			}
+			continue // another request took it
+		case <-ctx.Done():
+		}
+		break
 	}
 	select {
 	case d := <-done: // made it as the request gave up
 		return d.session, d.err
 	default:
 	}
-	go func() {
-		if d := <-done; d.session != nil {
-			c.keepIdle(d.session)
-		}
-	}()
+	poolLater()
 	return nil, ctx.Err()
 }
 
