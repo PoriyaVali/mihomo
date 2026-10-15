@@ -25,6 +25,8 @@ type Client struct {
 
 	idleSession     *skiplist.SkipList[uint64, *Session]
 	idleSessionLock sync.Mutex
+	// idleReady is closed, and replaced, whenever a session joins the pool.
+	idleReady chan struct{}
 
 	sessions     map[uint64]*Session
 	sessionsLock sync.Mutex
@@ -32,6 +34,7 @@ type Client struct {
 	padding *atomic.Pointer[padding.PaddingFactory]
 
 	clientMetadata     string
+	synRTT             synRTT
 	idleSessionTimeout time.Duration
 	minIdleSession     int
 	disableReuse       bool
@@ -55,6 +58,7 @@ func NewClient(ctx context.Context, dialOut util.DialOutFunc, _padding *atomic.P
 	}
 	c.die, c.dieCancel = context.WithCancel(ctx)
 	c.idleSession = skiplist.NewSkipList[uint64, *Session]()
+	c.idleReady = make(chan struct{})
 	if !c.disableReuse {
 		util.StartRoutine(c.die, idleSessionCheckInterval, c.idleCleanup)
 	}
@@ -90,39 +94,142 @@ func (c *Client) CreateStream(ctx context.Context) (net.Conn, error) {
 	stream.dieHook = func() {
 		// If Session is not closed, put this Stream to pool
 		if !session.IsClosed() {
-			if c.disableReuse {
-				session.Close()
-				return
-			}
-
-			select {
-			case <-c.die.Done():
-				// Now client has been closed
-				session.Close()
-			default:
-				c.idleSessionLock.Lock()
-				session.idleSince = time.Now()
-				c.idleSession.Insert(math.MaxUint64-session.seq, session)
-				c.idleSessionLock.Unlock()
-			}
+			c.keepIdle(session)
 		}
 	}
 
 	return stream, nil
 }
 
+// keepIdle puts a live session in the idle pool, or closes it when reuse is
+// off or the client has been closed.
+//
+// Whether the session is closed is checked under the pool lock. Its close
+// hook removes it from the pool under the same lock, so a session that closed
+// first - a handshake finishing just as the peer drops the connection - is
+// never inserted after its removal, where the next request would take it and
+// fail instead of dialling a new one.
+func (c *Client) keepIdle(session *Session) {
+	if c.disableReuse {
+		session.Close()
+		return
+	}
+	select {
+	case <-c.die.Done():
+		// Now client has been closed
+		session.Close()
+	default:
+		c.idleSessionLock.Lock()
+		if session.IsClosed() {
+			c.idleSessionLock.Unlock()
+			return
+		}
+		session.idleSince = time.Now()
+		c.idleSession.Insert(math.MaxUint64-session.seq, session)
+		close(c.idleReady)
+		c.idleReady = make(chan struct{})
+		c.idleSessionLock.Unlock()
+	}
+}
+
+// getIdleSession takes the newest idle session, passing over any that closed
+// while its close hook has yet to remove it.
 func (c *Client) getIdleSession() (idle *Session) {
 	c.idleSessionLock.Lock()
-	if !c.idleSession.IsEmpty() {
+	for !c.idleSession.IsEmpty() {
 		it := c.idleSession.Iterate()
-		idle = it.Value()
+		session := it.Value()
 		c.idleSession.Remove(it.Key())
+		if !session.IsClosed() {
+			idle = session
+			break
+		}
 	}
 	c.idleSessionLock.Unlock()
 	return
 }
 
+// sessionDialTimeout bounds a new session's dial and handshake once the
+// request that started it has given up.
+const sessionDialTimeout = 20 * time.Second
+
+// detachedContext keeps a context's values but not its deadline or
+// cancellation, as context.WithoutCancel does from Go 1.21.
+type detachedContext struct{ context.Context }
+
+func (detachedContext) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (detachedContext) Done() <-chan struct{}       { return nil }
+func (detachedContext) Err() error                  { return nil }
+
+// createSession dials a new session for a request, which may give up first:
+// mihomo allows a proxy dial five seconds in all, TCP and TLS included, and
+// over a weak link a handshake can take longer. Then every request started a
+// handshake that was cut off at five seconds, and no session was ever made.
+// The handshake now goes on after the request has given up, within
+// sessionDialTimeout, and the session it makes waits in the idle pool for the
+// request that follows - apps and browsers retry a failed connection.
+//
+// While it waits, the request also takes any session that joins the pool -
+// one freed by another stream, or a handshake an earlier request gave up on -
+// rather than wait for its own, which then joins the pool in turn.
 func (c *Client) createSession(ctx context.Context) (*Session, error) {
+	type dialed struct {
+		session *Session
+		err     error
+	}
+	done := make(chan dialed, 1)
+	go func() {
+		dctx, cancel := context.WithTimeout(detachedContext{ctx}, sessionDialTimeout)
+		defer cancel()
+		stop := make(chan struct{})
+		defer close(stop)
+		go func() {
+			select {
+			case <-c.die.Done():
+				cancel()
+			case <-stop:
+			}
+		}()
+		session, err := c.dialSession(dctx)
+		done <- dialed{session, err}
+	}()
+	poolLater := func() {
+		go func() {
+			if d := <-done; d.session != nil {
+				c.keepIdle(d.session)
+			}
+		}()
+	}
+	for {
+		var ready chan struct{} // nil, never ready, without a pool
+		if !c.disableReuse {
+			c.idleSessionLock.Lock()
+			ready = c.idleReady
+			c.idleSessionLock.Unlock()
+		}
+		select {
+		case d := <-done:
+			return d.session, d.err
+		case <-ready:
+			if session := c.getIdleSession(); session != nil {
+				poolLater()
+				return session, nil
+			}
+			continue // another request took it
+		case <-ctx.Done():
+		}
+		break
+	}
+	select {
+	case d := <-done: // made it as the request gave up
+		return d.session, d.err
+	default:
+	}
+	poolLater()
+	return nil, ctx.Err()
+}
+
+func (c *Client) dialSession(ctx context.Context) (*Session, error) {
 	underlying, err := c.dialOut(ctx)
 	if err != nil {
 		return nil, err
@@ -130,6 +237,7 @@ func (c *Client) createSession(ctx context.Context) (*Session, error) {
 
 	session := NewClientSession(underlying, c.padding, c.clientMetadata)
 	session.seq = c.sessionCounter.Add(1)
+	session.synRTT = &c.synRTT
 	session.dieHook = func() {
 		if !c.disableReuse {
 			c.idleSessionLock.Lock()
