@@ -5,12 +5,15 @@ import (
 	"net"
 	"os"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/metacubex/mihomo/transport/anytls/pipe"
 )
 
 // Stream implements net.Conn
+type streamError struct{ err error }
+
 type Stream struct {
 	id uint32
 
@@ -20,9 +23,10 @@ type Stream struct {
 	pipeW         *pipe.PipeWriter
 	writeDeadline pipe.PipeDeadline
 
-	dieOnce sync.Once
-	dieHook func()
-	dieErr  error
+	dieOnce   sync.Once
+	dieHook   func()
+	dieErr    atomic.Pointer[streamError]
+	dieHookMu sync.Mutex
 
 	reportOnce sync.Once
 }
@@ -40,8 +44,8 @@ func newStream(id uint32, sess *Session) *Stream {
 // Read implements net.Conn
 func (s *Stream) Read(b []byte) (n int, err error) {
 	n, err = s.pipeR.Read(b)
-	if n == 0 && s.dieErr != nil {
-		err = s.dieErr
+	if closed := s.dieErr.Load(); n == 0 && closed != nil {
+		err = closed.err
 	}
 	return
 }
@@ -53,8 +57,8 @@ func (s *Stream) Write(b []byte) (n int, err error) {
 		return 0, os.ErrDeadlineExceeded
 	default:
 	}
-	if s.dieErr != nil {
-		return 0, s.dieErr
+	if closed := s.dieErr.Load(); closed != nil {
+		return 0, closed.err
 	}
 	n, err = s.sess.writeDataFrame(s.id, b)
 	return
@@ -69,34 +73,28 @@ func (s *Stream) Close() error {
 func (s *Stream) closeLocally() {
 	var once bool
 	s.dieOnce.Do(func() {
-		s.dieErr = net.ErrClosed
+		s.dieErr.Store(&streamError{net.ErrClosed})
 		s.pipeR.Close()
 		once = true
 	})
 	if once {
-		if s.dieHook != nil {
-			s.dieHook()
-			s.dieHook = nil
-		}
+		s.runDieHook()
 	}
 }
 
 func (s *Stream) closeWithError(err error) error {
 	var once bool
 	s.dieOnce.Do(func() {
-		s.dieErr = err
+		s.dieErr.Store(&streamError{err})
 		s.pipeR.Close()
 		once = true
 	})
 	if once {
 		err := s.sess.streamClosed(s.id)
-		if s.dieHook != nil {
-			s.dieHook()
-			s.dieHook = nil
-		}
+		s.runDieHook()
 		return err
 	} else {
-		return s.dieErr
+		return s.dieErr.Load().err
 	}
 }
 
@@ -162,4 +160,24 @@ func (s *Stream) HandshakeSuccess() error {
 		}
 	}
 	return nil
+}
+
+func (s *Stream) setDieHook(hook func()) {
+	s.dieHookMu.Lock()
+	if s.dieErr.Load() != nil {
+		s.dieHookMu.Unlock()
+		hook()
+		return
+	}
+	s.dieHook = hook
+	s.dieHookMu.Unlock()
+}
+func (s *Stream) runDieHook() {
+	s.dieHookMu.Lock()
+	hook := s.dieHook
+	s.dieHook = nil
+	s.dieHookMu.Unlock()
+	if hook != nil {
+		hook()
+	}
 }

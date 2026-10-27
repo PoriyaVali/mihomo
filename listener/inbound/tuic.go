@@ -98,7 +98,10 @@ func (t *Tuic) Listen(tunnel C.Tunnel) error {
 
 // Close implements constant.InboundListener
 func (t *Tuic) Close() error {
-	return t.l.Close()
+	if t.l != nil {
+		return t.l.Close()
+	}
+	return nil
 }
 
 var _ C.InboundListener = (*Tuic)(nil)

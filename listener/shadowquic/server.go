@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/netip"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
@@ -29,7 +30,7 @@ import (
 const ServerMaxIncomingStreams = (1 << 32) - 1
 
 type Listener struct {
-	closed       bool
+	closed       atomic.Bool
 	config       LC.ShadowQuicServer
 	udpListeners []net.PacketConn
 	servers      []*shadowquic.Server
@@ -100,8 +101,11 @@ func New(config LC.ShadowQuicServer, lc C.InboundListenConfig, tunnel C.Tunnel, 
 	if config.CWND == 0 {
 		config.CWND = 32
 	}
-	jlsPacketDialer := func(_ context.Context, network, address string) (net.PacketConn, net.Addr, error) {
-		return inner.HandleUdp(tunnel, network, address, config.JLSUpstream.Proxy)
+	jlsPacketDialer := config.PacketDialer
+	if jlsPacketDialer == nil {
+		jlsPacketDialer = func(_ context.Context, network, address string) (net.PacketConn, net.Addr, error) {
+			return inner.HandleUdp(tunnel, network, address, config.JLSUpstream.Proxy)
+		}
 	}
 	quicVersions := shadowquic.DefaultQUICVersions()
 	if len(config.QUICVersions) > 0 {
@@ -187,7 +191,7 @@ func New(config LC.ShadowQuicServer, lc C.InboundListenConfig, tunnel C.Tunnel, 
 
 		go func() {
 			err := server.Serve()
-			if err != nil && !sl.closed {
+			if err != nil && !sl.closed.Load() {
 				log.Warnln("ShadowQuic server closed: %s", err)
 			}
 		}()
@@ -210,7 +214,7 @@ func defaultJLSServerName(upstreamAddr string) string {
 }
 
 func (l *Listener) Close() error {
-	l.closed = true
+	l.closed.Store(true)
 	var retErr error
 	for _, server := range l.servers {
 		if err := server.Close(); err != nil {

@@ -1,6 +1,8 @@
 package inbound
 
 import (
+	"context"
+	"net"
 	"strings"
 
 	"github.com/metacubex/mihomo/common/utils"
@@ -11,6 +13,7 @@ import (
 )
 
 type ShadowQuicOption struct {
+	PacketDialer func(context.Context, string, string) (net.PacketConn, net.Addr, error) `inbound:"-"`
 	BaseOption
 	Users                 []ShadowQuicUser      `inbound:"users,omitempty"`
 	JLSUpstream           ShadowQuicJLSUpstream `inbound:"jls-upstream"`
@@ -80,6 +83,7 @@ func NewShadowQuic(options *ShadowQuicOption) (*ShadowQuic, error) {
 		config: options,
 		ss: LC.ShadowQuicServer{
 			Enable:                true,
+			PacketDialer:          options.PacketDialer,
 			Listen:                base.RawAddress(),
 			Users:                 utils.Map(options.Users, ShadowQuicUser.Build),
 			JLSUpstream:           options.JLSUpstream.Build(),

@@ -4,6 +4,7 @@ import (
 	"context"
 	"net"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
@@ -27,7 +28,7 @@ import (
 const ServerMaxIncomingStreams = (1 << 32) - 1
 
 type Listener struct {
-	closed       bool
+	closed       atomic.Bool
 	config       LC.TuicServer
 	udpListeners []net.PacketConn
 	servers      []*tuic.Server
@@ -54,7 +55,7 @@ func New(config LC.TuicServer, lc C.InboundListenConfig, tunnel C.Tunnel, additi
 		Time:       ntp.Now,
 		MinVersion: tls.VersionTLS13,
 	}
-	certLoader, err := ca.NewTLSKeyPairLoader(config.Certificate, config.PrivateKey)
+	certLoader, err := ca.NewTLSKeyPairLoaderForListener(lc, config.Certificate, config.PrivateKey)
 	if err != nil {
 		return nil, err
 	}
@@ -173,7 +174,7 @@ func New(config LC.TuicServer, lc C.InboundListenConfig, tunnel C.Tunnel, additi
 		option.Users = users
 	}
 
-	sl := &Listener{false, config, nil, nil}
+	sl := &Listener{config: config}
 
 	for _, addr := range strings.Split(config.Listen, ",") {
 		addr := addr
@@ -200,7 +201,7 @@ func New(config LC.TuicServer, lc C.InboundListenConfig, tunnel C.Tunnel, additi
 		go func() {
 			err := server.Serve()
 			if err != nil {
-				if sl.closed {
+				if sl.closed.Load() {
 					return
 				}
 			}
@@ -211,7 +212,7 @@ func New(config LC.TuicServer, lc C.InboundListenConfig, tunnel C.Tunnel, additi
 }
 
 func (l *Listener) Close() error {
-	l.closed = true
+	l.closed.Store(true)
 	var retErr error
 	for _, lis := range l.servers {
 		err := lis.Close()
