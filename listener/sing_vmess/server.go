@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
@@ -34,7 +35,7 @@ import (
 )
 
 type Listener struct {
-	closed    bool
+	closed    atomic.Bool
 	config    LC.VmessServer
 	listeners []net.Listener
 	service   *vmess.Service[string]
@@ -90,7 +91,7 @@ func New(config LC.VmessServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 		return nil, err
 	}
 
-	sl = &Listener{false, config, nil, service}
+	sl = &Listener{atomic.Bool{}, config, nil, service}
 
 	httpServer := http.Server{
 		IdleTimeout: 30 * time.Second,
@@ -104,7 +105,7 @@ func New(config LC.VmessServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 	var tlsMirrorBuilder *tlsmirror.Builder
 
 	if config.Certificate != "" && config.PrivateKey != "" {
-		certLoader, err := ca.NewTLSKeyPairLoader(config.Certificate, config.PrivateKey)
+		certLoader, err := ca.NewTLSKeyPairLoaderForListener(lc, config.Certificate, config.PrivateKey)
 		if err != nil {
 			return nil, err
 		}
@@ -290,7 +291,7 @@ func New(config LC.VmessServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 			for {
 				c, err := l.Accept()
 				if err != nil {
-					if sl.closed {
+					if sl.closed.Load() {
 						break
 					}
 					continue
@@ -305,7 +306,7 @@ func New(config LC.VmessServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 }
 
 func (l *Listener) Close() error {
-	l.closed = true
+	l.closed.Store(true)
 	var retErr error
 	for _, lis := range l.listeners {
 		err := lis.Close()

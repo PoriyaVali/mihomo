@@ -75,6 +75,18 @@ func NewTLSKeyPairLoader(certificate, privateKey string) (func() (*tls.Certifica
 	}, nil
 }
 
+// NewTLSKeyPairLoaderForListener lets an embedding host supply a scoped file
+// loader through its own listener factory. Ordinary configuration files retain
+// Mihomo's SAFE_PATHS policy; this does not change any global path settings.
+func NewTLSKeyPairLoaderForListener(lc C.InboundListenConfig, certificate, privateKey string) (func() (*tls.Certificate, error), error) {
+	if host, ok := lc.(interface {
+		TLSKeyPairLoader(string, string) (func() (*tls.Certificate, error), error)
+	}); ok {
+		return host.TLSKeyPairLoader(certificate, privateKey)
+	}
+	return NewTLSKeyPairLoader(certificate, privateKey)
+}
+
 func LoadCertificates(certificate string) (*x509.CertPool, error) {
 	pool := x509.NewCertPool()
 	if pool.AppendCertsFromPEM([]byte(certificate)) {

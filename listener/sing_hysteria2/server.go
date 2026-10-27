@@ -8,6 +8,7 @@ import (
 	"net/netip"
 	"net/url"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
@@ -34,7 +35,7 @@ import (
 )
 
 type Listener struct {
-	closed       bool
+	closed       atomic.Bool
 	config       LC.Hysteria2Server
 	udpListeners []net.PacketConn
 	services     []*hysteria2.Service[string]
@@ -60,13 +61,13 @@ func New(config LC.Hysteria2Server, lc C.InboundListenConfig, tunnel C.Tunnel, a
 		return nil, err
 	}
 
-	sl = &Listener{false, config, nil, nil}
+	sl = &Listener{config: config}
 
 	tlsConfig := &tls.Config{
 		Time:       ntp.Now,
 		MinVersion: tls.VersionTLS13,
 	}
-	certLoader, err := ca.NewTLSKeyPairLoader(config.Certificate, config.PrivateKey)
+	certLoader, err := ca.NewTLSKeyPairLoaderForListener(lc, config.Certificate, config.PrivateKey)
 	if err != nil {
 		return nil, err
 	}
@@ -272,7 +273,7 @@ func New(config LC.Hysteria2Server, lc C.InboundListenConfig, tunnel C.Tunnel, a
 }
 
 func (l *Listener) Close() error {
-	l.closed = true
+	l.closed.Store(true)
 	var retErr error
 	for _, service := range l.services {
 		err := service.Close()

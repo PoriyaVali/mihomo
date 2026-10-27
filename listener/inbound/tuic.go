@@ -10,6 +10,7 @@ import (
 )
 
 type TuicOption struct {
+	Allow0RTT *bool `inbound:"allow-0rtt,omitempty"`
 	BaseOption
 	Token                 []string          `inbound:"token,omitempty"`
 	Users                 map[string]string `inbound:"users,omitempty"`
@@ -49,6 +50,7 @@ func NewTuic(options *TuicOption) (*Tuic, error) {
 		config: options,
 		ts: LC.TuicServer{
 			Enable:                true,
+			Allow0RTT:             options.Allow0RTT,
 			Listen:                base.RawAddress(),
 			Token:                 options.Token,
 			Users:                 options.Users,
@@ -98,7 +100,10 @@ func (t *Tuic) Listen(tunnel C.Tunnel) error {
 
 // Close implements constant.InboundListener
 func (t *Tuic) Close() error {
-	return t.l.Close()
+	if t.l != nil {
+		return t.l.Close()
+	}
+	return nil
 }
 
 var _ C.InboundListener = (*Tuic)(nil)

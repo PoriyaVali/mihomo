@@ -30,7 +30,7 @@ import (
 )
 
 type Listener struct {
-	closed    bool
+	closed    atomic.Bool
 	config    LC.AnyTLSServer
 	listeners []net.Listener
 	tlsConfig *tls.Config
@@ -51,7 +51,7 @@ func New(config LC.AnyTLSServer, lc C.InboundListenConfig, tunnel C.Tunnel, addi
 	var jlsBuilder *jls.Builder
 	tlsConfig := &tls.Config{Time: ntp.Now}
 	if config.Certificate != "" && config.PrivateKey != "" {
-		certLoader, err := ca.NewTLSKeyPairLoader(config.Certificate, config.PrivateKey)
+		certLoader, err := ca.NewTLSKeyPairLoaderForListener(lc, config.Certificate, config.PrivateKey)
 		if err != nil {
 			return nil, err
 		}
@@ -167,7 +167,7 @@ func New(config LC.AnyTLSServer, lc C.InboundListenConfig, tunnel C.Tunnel, addi
 			for {
 				c, err := l.Accept()
 				if err != nil {
-					if sl.closed {
+					if sl.closed.Load() {
 						break
 					}
 					continue
@@ -181,7 +181,7 @@ func New(config LC.AnyTLSServer, lc C.InboundListenConfig, tunnel C.Tunnel, addi
 }
 
 func (l *Listener) Close() error {
-	l.closed = true
+	l.closed.Store(true)
 	var retErr error
 	for _, lis := range l.listeners {
 		err := lis.Close()

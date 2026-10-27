@@ -82,6 +82,7 @@ func (v *AnyTLS) Listen(tunnel C.Tunnel) error {
 	var err error
 	v.l, err = anytls.New(v.vs, v.ListenConfig(), tunnel, v.Additions()...)
 	if err != nil {
+		v.l = nil
 		return err
 	}
 	log.Infoln("AnyTLS[%s] proxy listening at: %s", v.Name(), v.Address())
@@ -90,7 +91,10 @@ func (v *AnyTLS) Listen(tunnel C.Tunnel) error {
 
 // Close implements constant.InboundListener
 func (v *AnyTLS) Close() error {
-	return v.l.Close()
+	if v.l != nil {
+		return v.l.Close()
+	}
+	return nil
 }
 
 var _ C.InboundListener = (*AnyTLS)(nil)

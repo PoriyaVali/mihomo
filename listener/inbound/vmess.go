@@ -106,6 +106,7 @@ func (v *Vmess) Listen(tunnel C.Tunnel) error {
 	var err error
 	v.l, err = sing_vmess.New(v.vs, v.ListenConfig(), tunnel, v.Additions()...)
 	if err != nil {
+		v.l = nil
 		return err
 	}
 	log.Infoln("Vmess[%s] proxy listening at: %s", v.Name(), v.Address())
@@ -114,7 +115,10 @@ func (v *Vmess) Listen(tunnel C.Tunnel) error {
 
 // Close implements constant.InboundListener
 func (v *Vmess) Close() error {
-	return v.l.Close()
+	if v.l != nil {
+		return v.l.Close()
+	}
+	return nil
 }
 
 var _ C.InboundListener = (*Vmess)(nil)

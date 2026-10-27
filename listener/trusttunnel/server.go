@@ -5,6 +5,7 @@ import (
 	"errors"
 	"net"
 	"strings"
+	"sync/atomic"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
 	"github.com/metacubex/mihomo/common/sockopt"
@@ -21,7 +22,7 @@ import (
 )
 
 type Listener struct {
-	closed       bool
+	closed       atomic.Bool
 	config       LC.TrustTunnelServer
 	listeners    []net.Listener
 	udpListeners []net.PacketConn
@@ -39,7 +40,7 @@ func New(config LC.TrustTunnelServer, lc C.InboundListenConfig, tunnel C.Tunnel,
 
 	tlsConfig := &tls.Config{Time: ntp.Now}
 	if config.Certificate != "" && config.PrivateKey != "" {
-		certLoader, err := ca.NewTLSKeyPairLoader(config.Certificate, config.PrivateKey)
+		certLoader, err := ca.NewTLSKeyPairLoaderForListener(lc, config.Certificate, config.PrivateKey)
 		if err != nil {
 			return nil, err
 		}
@@ -151,23 +152,23 @@ func New(config LC.TrustTunnelServer, lc C.InboundListenConfig, tunnel C.Tunnel,
 }
 
 func (l *Listener) Close() error {
-	l.closed = true
+	l.closed.Store(true)
 	var retErr error
 	for _, lis := range l.services {
 		err := lis.Close()
-		if err != nil {
+		if err != nil && !errors.Is(err, net.ErrClosed) {
 			retErr = err
 		}
 	}
 	for _, lis := range l.listeners {
 		err := lis.Close()
-		if err != nil {
+		if err != nil && !errors.Is(err, net.ErrClosed) {
 			retErr = err
 		}
 	}
 	for _, lis := range l.udpListeners {
 		err := lis.Close()
-		if err != nil {
+		if err != nil && !errors.Is(err, net.ErrClosed) {
 			retErr = err
 		}
 	}
