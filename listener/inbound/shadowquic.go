@@ -13,7 +13,7 @@ import (
 )
 
 type ShadowQuicOption struct {
-	PacketDialer func(context.Context, string, string) (net.PacketConn, net.Addr, error) `inbound:"-"`
+	PacketDialer func(context.Context, string, string) (net.PacketConn, net.Addr, error) `inbound:"-" json:"-" yaml:"-"`
 	BaseOption
 	Users                 []ShadowQuicUser      `inbound:"users,omitempty"`
 	JLSUpstream           ShadowQuicJLSUpstream `inbound:"jls-upstream"`

@@ -20,4 +20,4 @@ jobs:
           GOEXPERIMENT: jsonv2
         run: >-
           go test -race -timeout 3m ./transport/socks5 ./component/ca ./transport/anytls/session ./listener/inbound
-          -run 'TestStreamCloseConcurrentWithReadAndLateHook|TestAuthenticatedAssociationReply|TestRejectedAssociationDoesNotSucceedOnClient|TestAuthenticationMethodMustBeOffered|TestInbound(Vmess_TLS|Vless_TLS|AnyTLS_TLS|Hysteria2_TLS|TrustTunnel_H2|TrustTunnel_QUIC)$'
+          -run 'TestShadowQuicProgrammaticDialerPreservesConfigEquality|TestStreamCloseConcurrentWithReadAndLateHook|TestAuthenticatedAssociationReply|TestRejectedAssociationDoesNotSucceedOnClient|TestAuthenticationMethodMustBeOffered|TestInbound(Vmess_TLS|Vless_TLS|AnyTLS_TLS|Hysteria2_TLS|TrustTunnel_H2|TrustTunnel_QUIC)$'
