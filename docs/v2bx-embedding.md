@@ -34,3 +34,9 @@ Concurrent server regression tests also found unsynchronized AnyTLS stream
 close errors and VLESS Vision read/write inspection state. Stream errors and
 inspection flags now use atomics; TLS filtering uses a small mutex without
 locking network IO. A late AnyTLS stream close hook runs exactly once.
+
+The pinned smux dependency is vendored as the separate `third_party/smux`
+module with its MIT license. A deterministic regression test verifies that a
+queued frame keeps its own payload after Write times out, rather than retaining
+a TLS caller's reusable buffer. Embedders must explicitly replace this module
+as well as the Mihomo root; Go does not inherit a dependency's replacements.

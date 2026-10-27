@@ -1,7 +1,7 @@
 name: Managed server embedding
 on:
   pull_request:
-    paths: ['listener/**', 'transport/socks5/**', 'transport/anytls/**', 'transport/vless/vision/**', 'component/ca/**', '.github/workflows/managed-server.yml']
+    paths: ['listener/**', 'transport/socks5/**', 'transport/anytls/**', 'transport/vless/vision/**', 'component/ca/**', 'third_party/smux/**', 'go.mod', '.github/workflows/managed-server.yml']
   workflow_dispatch:
 jobs:
   managed-server:
@@ -12,6 +12,9 @@ jobs:
         with:
           go-version: '1.27.1'
           cache: true
+      - name: Queued multiplexing payload ownership
+        working-directory: third_party/smux
+        run: go test -race -timeout 3m -skip '^Test(8GBTransfer|RandomLengthRandomDataTransfer)V[12]$' .
       - name: Authentication and listener lifecycle regressions
         env:
           GOEXPERIMENT: jsonv2
