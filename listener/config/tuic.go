@@ -7,6 +7,8 @@ import (
 )
 
 type TuicServer struct {
+	// nil keeps standalone Mihomo's historical early-data default.
+	Allow0RTT             *bool             `yaml:"allow-0rtt,omitempty" json:"allow-0rtt,omitempty"`
 	Enable                bool              `yaml:"enable" json:"enable"`
 	Listen                string            `yaml:"listen" json:"listen"`
 	Token                 []string          `yaml:"token" json:"token,omitempty"`

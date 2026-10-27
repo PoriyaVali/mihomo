@@ -95,12 +95,16 @@ func New(config LC.TuicServer, lc C.InboundListenConfig, tunnel C.Tunnel, additi
 		config.AuthenticationTimeout = 1000
 	}
 
+	allow0RTT := true
+	if config.Allow0RTT != nil {
+		allow0RTT = *config.Allow0RTT
+	}
 	quicConfig := &quic.Config{
 		MaxIdleTimeout:        time.Duration(config.MaxIdleTime) * time.Millisecond,
 		MaxIncomingStreams:    ServerMaxIncomingStreams,
 		MaxIncomingUniStreams: ServerMaxIncomingStreams,
 		EnableDatagrams:       true,
-		Allow0RTT:             true,
+		Allow0RTT:             allow0RTT,
 		DisablePathManager:    true, // for port hopping
 	}
 	quicConfig.InitialStreamReceiveWindow = tuic.DefaultStreamReceiveWindow / 10
