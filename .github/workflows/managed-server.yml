@@ -19,5 +19,5 @@ jobs:
         env:
           GOEXPERIMENT: jsonv2
         run: >-
-          go test -race -timeout 3m ./transport/socks5 ./component/ca ./transport/anytls/session ./listener/inbound
-          -run 'TestShadowQuicProgrammaticDialerPreservesConfigEquality|TestStreamCloseConcurrentWithReadAndLateHook|TestAuthenticatedAssociationReply|TestRejectedAssociationDoesNotSucceedOnClient|TestAuthenticationMethodMustBeOffered|TestInbound(Vmess_TLS|Vless_TLS|AnyTLS_TLS|Hysteria2_TLS|TrustTunnel_H2|TrustTunnel_QUIC)$'
+          go test -race -timeout 3m ./transport/socks5 ./component/ca ./transport/anytls/session ./listener/http ./listener/inbound
+          -run 'TestKeepAliveRequestWith(FailedCredentialsIsRejected|outCredentialsKeepsVerifiedUser)|TestShadowQuicProgrammaticDialerPreservesConfigEquality|TestStreamCloseConcurrentWithReadAndLateHook|TestAuthenticatedAssociationReply|TestRejectedAssociationDoesNotSucceedOnClient|TestAuthenticationMethodMustBeOffered|TestInbound(Vmess_TLS|Vless_TLS|AnyTLS_TLS|Hysteria2_TLS|TrustTunnel_H2|TrustTunnel_QUIC)$'

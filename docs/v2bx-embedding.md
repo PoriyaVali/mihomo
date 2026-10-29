@@ -13,6 +13,14 @@ host owns cleanup, source-address pinning, association expiry, and billing.
 The original `ServerHandshake` remains available. Clients now reject nonzero
 SOCKS REP codes, and servers reject an unoffered password method.
 
+The HTTP proxy listener sets `InUser` only to a verified identity. A later
+request on an authenticated keep-alive connection that carries no
+`Proxy-Authorization` keeps the identity the connection verified; a request
+whose credentials fail is answered with an error and is not served, even after
+an earlier request succeeded. Previously such a request was forwarded under
+the unverified username it named, which a metering host would bill to that
+account.
+
 For TLS, `ca.NewTLSKeyPairLoaderForListener` consults the embedding socket
 factory's optional `TLSKeyPairLoader` method. The host can authorize its exact
 server key pair and reload it without changing Mihomo's global `SAFE_PATHS`.
