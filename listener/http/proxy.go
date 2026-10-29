@@ -45,6 +45,7 @@ func HandleConn(c net.Conn, tunnel C.Tunnel, store auth.AuthStore, additions ...
 	authenticator := store.Authenticator()
 	trusted := authenticator == nil // disable authenticate if lru is nil
 	lastUser := ""
+	verifiedUser := ""
 
 	for {
 		peekMutex.Lock()
@@ -61,6 +62,15 @@ func HandleConn(c net.Conn, tunnel C.Tunnel, store auth.AuthStore, additions ...
 		resp, user := authenticate(request, authenticator) // always call authenticate function to get user
 		if resp == nil {
 			trusted = true
+			verifiedUser = user
+		} else if trusted && request.Header.Get("Proxy-Authorization") == "" {
+			// Some clients authenticate only the first request of a keep-alive
+			// connection. Keep the identity that request verified.
+			resp, user = nil, verifiedUser
+		} else {
+			// Failed credentials are never served, and never inherit the
+			// identity an earlier request on this connection verified.
+			trusted = false
 		}
 		additions[inUserIdx] = inbound.WithInUser(user)
 
