@@ -19,7 +19,7 @@ import (
 type Mieru struct {
 	*Base
 	option *MieruOption
-	server mieruserver.Server
+	server *mieru.Server
 	mu     sync.Mutex
 }
 
@@ -41,8 +41,8 @@ func NewMieru(option *MieruOption) (*Mieru, error) {
 	if err != nil {
 		return nil, fmt.Errorf("failed to build mieru server config: %w", err)
 	}
-	s := mieruserver.NewServer()
-	if err := s.Store(config); err != nil {
+	s, err := mieru.NewServer(config)
+	if err != nil {
 		return nil, fmt.Errorf("failed to store mieru server config: %w", err)
 	}
 	// Server is started lazily when Listen() is called for the first time.
@@ -54,6 +54,8 @@ func NewMieru(option *MieruOption) (*Mieru, error) {
 }
 
 func (m *Mieru) Config() C.InboundConfig {
+	m.mu.Lock()
+	defer m.mu.Unlock()
 	return m.option
 }
 
@@ -89,6 +91,27 @@ func (m *Mieru) Listen(tunnel C.Tunnel) error {
 		}
 	}()
 	log.Infoln("Mieru[%s] proxy listening at: %s", m.Name(), m.Address())
+	return nil
+}
+
+// UpdateUsers replaces the users of the listener without closing it. Sessions
+// that already authenticated keep their credential: an embedder removing a
+// user closes that user's connections itself.
+func (m *Mieru) UpdateUsers(users map[string]string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	option := *m.option
+	option.Users = make(map[string]string, len(users))
+	for name, password := range users {
+		option.Users[name] = password
+	}
+	if err := validateMieruOption(&option); err != nil {
+		return fmt.Errorf("failed to validate mieru option: %w", err)
+	}
+	if err := m.server.SetUsers(mieruUsers(users)); err != nil {
+		return fmt.Errorf("failed to update mieru users: %w", err)
+	}
+	m.option = &option
 	return nil
 }
 
@@ -138,13 +161,7 @@ func buildMieruServerConfig(option *MieruOption, ports utils.IntRanges[uint16]) 
 			})
 		}
 	}
-	var users []*mierupb.User
-	for username, password := range option.Users {
-		users = append(users, &mierupb.User{
-			Name:     proto.String(username),
-			Password: proto.String(password),
-		})
-	}
+	users := mieruUsers(option.Users)
 	var trafficPattern *mierupb.TrafficPattern
 	trafficPattern, _ = mierutp.Decode(option.TrafficPattern)
 	var advancedSettings *mierupb.ServerAdvancedSettings
@@ -165,6 +182,17 @@ func buildMieruServerConfig(option *MieruOption, ports utils.IntRanges[uint16]) 
 		StreamListenerFactory: lc,
 		PacketListenerFactory: lc,
 	}, nil
+}
+
+func mieruUsers(option map[string]string) []*mierupb.User {
+	var users []*mierupb.User
+	for username, password := range option {
+		users = append(users, &mierupb.User{
+			Name:     proto.String(username),
+			Password: proto.String(password),
+		})
+	}
+	return users
 }
 
 func validateMieruOption(option *MieruOption) error {
