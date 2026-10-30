@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/netip"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -31,9 +32,14 @@ const ServerMaxIncomingStreams = (1 << 32) - 1
 
 type Listener struct {
 	closed       atomic.Bool
+	mu           sync.Mutex
 	config       LC.ShadowQuicServer
 	udpListeners []net.PacketConn
 	servers      []*shadowquic.Server
+	tlsConfig    *tls.Config
+	// userConfig is the TLS configuration every ClientHello is served with;
+	// JLS authenticates the hello against its users.
+	userConfig atomic.Pointer[tls.Config]
 }
 
 func New(config LC.ShadowQuicServer, lc C.InboundListenConfig, tunnel C.Tunnel, additions ...inbound.Addition) (*Listener, error) {
@@ -75,21 +81,19 @@ func New(config LC.ShadowQuicServer, lc C.InboundListenConfig, tunnel C.Tunnel, 
 	} else {
 		tlsConfig.NextProtos = []string{"h3"}
 	}
-	users := make([]tls.JLSUser, 0, len(config.Users))
-	for _, user := range config.Users {
-		users = append(users, tls.JLSUser{
-			Username: user.Username,
-			Password: user.Password,
-		})
-	}
 	serverName := config.JLSUpstream.SNI
 	if serverName == "" {
 		serverName = defaultJLSServerName(config.JLSUpstream.Addr)
 	}
 	tlsConfig.JLSConfig = &tls.JLSConfig{
 		Enable:     true,
-		Users:      users,
+		Users:      jlsUsers(config.Users),
 		ServerName: serverName,
+	}
+	sl := &Listener{config: config, tlsConfig: tlsConfig}
+	sl.storeUsers(config.Users)
+	tlsConfig.GetConfigForClient = func(*tls.ClientHelloInfo) (*tls.Config, error) {
+		return sl.userConfig.Load(), nil
 	}
 
 	if config.MaxIdleTime == 0 {
@@ -168,7 +172,6 @@ func New(config LC.ShadowQuicServer, lc C.InboundListenConfig, tunnel C.Tunnel, 
 		BBRProfile:            config.BBRProfile,
 	}
 
-	sl := &Listener{config: config}
 	for _, addr := range strings.Split(config.Listen, ",") {
 		addr = strings.TrimSpace(addr)
 		if addr == "" {
@@ -230,7 +233,40 @@ func (l *Listener) Close() error {
 }
 
 func (l *Listener) Config() LC.ShadowQuicServer {
+	l.mu.Lock()
+	defer l.mu.Unlock()
 	return l.config
+}
+
+// UpdateUsers replaces the JLS users without closing the listener. New
+// handshakes authenticate against them at once; established connections keep
+// the user they authenticated as, so an embedder removing a user closes that
+// user's connections itself.
+func (l *Listener) UpdateUsers(users []LC.ShadowQuicUser) {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	l.config.Users = append([]LC.ShadowQuicUser(nil), users...)
+	l.storeUsers(l.config.Users)
+}
+
+func (l *Listener) storeUsers(users []LC.ShadowQuicUser) {
+	next := l.tlsConfig.Clone()
+	next.GetConfigForClient = nil
+	jls := *l.tlsConfig.JLSConfig
+	jls.Users = jlsUsers(users)
+	next.JLSConfig = &jls
+	l.userConfig.Store(next)
+}
+
+func jlsUsers(users []LC.ShadowQuicUser) []tls.JLSUser {
+	jls := make([]tls.JLSUser, 0, len(users))
+	for _, user := range users {
+		jls = append(jls, tls.JLSUser{
+			Username: user.Username,
+			Password: user.Password,
+		})
+	}
+	return jls
 }
 
 func (l *Listener) AddrList() (addrList []net.Addr) {
