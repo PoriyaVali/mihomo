@@ -61,6 +61,15 @@ func New(config LC.ShadowTLS, tunnel C.Tunnel) (*Builder, error) {
 	return &Builder{config: serverConfig}, nil
 }
 
+// SetUsers replaces the version 3 users without closing the listeners.
+func (b Builder) SetUsers(users []LC.ShadowTLSUser) error {
+	list := make([]shadowtls.User, len(users))
+	for i, user := range users {
+		list[i] = shadowtls.User{Name: user.Name, Password: user.Password}
+	}
+	return b.config.SetUsers(list)
+}
+
 func (b Builder) NewListener(listener net.Listener) net.Listener {
 	return N.NewHandleContextListener(context.Background(), listener, func(ctx context.Context, conn net.Conn) (net.Conn, error) {
 		return shadowtls.Server(ctx, conn, b.config)

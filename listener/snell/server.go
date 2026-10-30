@@ -11,6 +11,7 @@ import (
 	"net/netip"
 	"strings"
 	"sync"
+	"sync/atomic"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
 	N "github.com/metacubex/mihomo/common/net"
@@ -31,9 +32,57 @@ type Listener struct {
 	closed    bool
 	config    LC.SnellServer
 	listeners []net.Listener
+	shadowTLS *shadowtls.Builder
+	// psks maps a user to their PSK; nil means one PSK for everybody.
+	psks atomic.Pointer[map[string]string]
 }
 
-func New(config LC.SnellServer, lc C.InboundListenConfig, tunnel C.Tunnel, additions ...inbound.Addition) (C.MultiAddrListener, error) {
+// shadowTLSUsers turns the Snell users into ShadowTLS v3 users: the
+// ShadowTLS handshake names the user, whose PSK then opens the Snell stream.
+func shadowTLSUsers(users map[string]string) ([]LC.ShadowTLSUser, error) {
+	if len(users) == 0 {
+		return nil, errors.New("snell inbound users: at least one user is required")
+	}
+	list := make([]LC.ShadowTLSUser, 0, len(users))
+	owner := make(map[string]string, len(users))
+	for name, psk := range users {
+		if name == "" || psk == "" {
+			return nil, errors.New("snell inbound users: every user needs a name and a psk")
+		}
+		if other, ok := owner[psk]; ok {
+			return nil, fmt.Errorf("snell inbound users: %q and %q have the same psk", other, name)
+		}
+		owner[psk] = name
+		list = append(list, LC.ShadowTLSUser{Name: name, Password: psk})
+	}
+	return list, nil
+}
+
+func (l *Listener) storePSKs(users map[string]string) {
+	psks := make(map[string]string, len(users))
+	for name, psk := range users {
+		psks[name] = psk
+	}
+	l.psks.Store(&psks)
+}
+
+// SetUsers replaces the users (name -> PSK) of a listener started with users,
+// without closing it. Connections that already passed the handshake keep
+// running: an embedder removing a user closes that user's connections itself.
+func (l *Listener) SetUsers(users map[string]string) error {
+	if l.psks.Load() == nil {
+		return errors.New("snell inbound was started without users")
+	}
+	list, err := shadowTLSUsers(users)
+	if err != nil {
+		return err
+	}
+	// A PSK first, then the handshake that leads to it.
+	l.storePSKs(users)
+	return l.shadowTLS.SetUsers(list)
+}
+
+func New(config LC.SnellServer, lc C.InboundListenConfig, tunnel C.Tunnel, additions ...inbound.Addition) (*Listener, error) {
 	if config.Version == 0 {
 		config.Version = snell.Version4
 	}
@@ -42,7 +91,16 @@ func New(config LC.SnellServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 	default:
 		return nil, fmt.Errorf("snell inbound version %d is not supported", config.Version)
 	}
-	if config.Psk == "" {
+	if config.Users != nil {
+		if !config.ShadowTLS.Enable || config.ShadowTLS.Version != 3 {
+			return nil, errors.New("snell inbound users require shadow-tls version 3, which tells users apart")
+		}
+		list, err := shadowTLSUsers(config.Users)
+		if err != nil {
+			return nil, err
+		}
+		config.ShadowTLS.Users = list
+	} else if config.Psk == "" {
 		return nil, errors.New("snell inbound requires psk")
 	}
 	switch config.ObfsMode {
@@ -52,6 +110,9 @@ func New(config LC.SnellServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 	}
 
 	l := &Listener{config: config}
+	if config.Users != nil {
+		l.storePSKs(config.Users)
+	}
 
 	securityModes := make([]string, 0, 3)
 	if config.ShadowTLS.Enable {
@@ -74,6 +135,7 @@ func New(config LC.SnellServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 		if err != nil {
 			return nil, err
 		}
+		l.shadowTLS = shadowTLSBuilder
 	}
 	var restlsBuilder *restls.Builder
 	if config.ResTLS.Enable {
@@ -162,7 +224,14 @@ func (l *Listener) HandleConn(rawConn net.Conn, tunnel C.Tunnel, additions ...in
 	default:
 		return
 	}
-	stream := snell.ServerStreamConn(conn, []byte(l.config.Psk), l.config.Version)
+	psk := l.config.Psk
+	if psks := l.psks.Load(); psks != nil {
+		var ok bool
+		if psk, ok = (*psks)[user]; !loaded || !ok {
+			return // removed after its ShadowTLS handshake
+		}
+	}
+	stream := snell.ServerStreamConn(conn, []byte(psk), l.config.Version)
 	for {
 		reuse, err := l.handleRequest(stream, tunnel, additions...)
 		if err != nil || !reuse {

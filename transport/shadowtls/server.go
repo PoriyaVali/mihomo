@@ -12,6 +12,7 @@ import (
 	"net"
 	"os"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	N "github.com/metacubex/mihomo/common/net"
@@ -40,8 +41,8 @@ type HandshakeConfig struct {
 
 type ServerConfig struct {
 	version                int
-	password               string // for protocol version 2
-	users                  []User // for protocol version 3
+	password               string                 // for protocol version 2
+	users                  atomic.Pointer[[]User] // for protocol version 3
 	handshake              HandshakeConfig
 	handshakeForServerName map[string]HandshakeConfig // for protocol version 2/3
 	strictMode             bool                       // for protocol version 3
@@ -77,15 +78,34 @@ func NewServerConfig(
 			return nil, fmt.Errorf("shadow-tls: invalid handshake for server name %q", serverName)
 		}
 	}
-	return &ServerConfig{
+	config := &ServerConfig{
 		version:                version,
 		password:               password,
-		users:                  append([]User(nil), users...),
 		handshake:              handshake,
 		handshakeForServerName: cloneHandshakeMap(handshakeForServerName),
 		strictMode:             strictMode,
 		wildcardSNI:            wildcardSNI,
-	}, nil
+	}
+	config.storeUsers(users)
+	return config, nil
+}
+
+func (s *ServerConfig) storeUsers(users []User) {
+	users = append([]User(nil), users...)
+	s.users.Store(&users)
+}
+
+// SetUsers replaces the version 3 users without disturbing connections that
+// already passed the handshake.
+func (s *ServerConfig) SetUsers(users []User) error {
+	if s.version != 3 {
+		return errors.New("shadow-tls: only protocol version 3 has users")
+	}
+	if len(users) == 0 {
+		return errors.New("shadow-tls: at least one user is required")
+	}
+	s.storeUsers(users)
+	return nil
 }
 
 func Server(ctx context.Context, conn net.Conn, config *ServerConfig) (net.Conn, error) {
@@ -192,7 +212,7 @@ func (s *ServerConfig) serverV3(ctx context.Context, conn net.Conn) (net.Conn, s
 	if err != nil {
 		return nil, "", fmt.Errorf("shadow-tls: extract server name: %w", err)
 	}
-	user, authErr := verifyClientHello(clientHello, s.users)
+	user, authErr := verifyClientHello(clientHello, *s.users.Load())
 	handshakeConfig := s.selectV3Handshake(serverName, authErr == nil)
 	if authErr != nil {
 		log.Warnln("[ShadowTLS] client hello verify failed: %v", authErr)
