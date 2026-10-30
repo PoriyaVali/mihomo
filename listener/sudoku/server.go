@@ -4,9 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"strings"
+	"sync/atomic"
 	"time"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
@@ -29,6 +31,43 @@ type Listener struct {
 	tunnelSrv *sudoku.HTTPMaskTunnelServer
 	fallback  string
 	handler   *sing.ListenerHandler
+	// users maps a user hash to its name; nil accepts every key holder.
+	users atomic.Pointer[map[string]string]
+}
+
+// SetUsers replaces the accepted client keys (name -> key) without closing
+// the listener. Sessions that already completed a handshake keep running: an
+// embedder removing a user closes that user's connections itself.
+func (l *Listener) SetUsers(users map[string]string) error {
+	byHash := make(map[string]string, len(users))
+	for name, key := range users {
+		if name == "" || strings.TrimSpace(key) == "" {
+			return errors.New("sudoku user needs a name and a key")
+		}
+		hash := sudoku.KIPUserHashHexFromKey(key)
+		if other, ok := byHash[hash]; ok {
+			return fmt.Errorf("sudoku users %q and %q have the same key", other, name)
+		}
+		byHash[hash] = name
+	}
+	l.users.Store(&byHash)
+	return nil
+}
+
+// lookupUser names the user a hash belongs to. It fails only for a hash that
+// is not listed: a listener without users accepts every hash and names nobody.
+func (l *Listener) lookupUser(hash string) (string, bool) {
+	users := l.users.Load()
+	if users == nil {
+		return "", true
+	}
+	name, ok := (*users)[hash]
+	return name, ok
+}
+
+func (l *Listener) allowUserHash(hash string) bool {
+	_, ok := l.lookupUser(hash)
+	return ok
 }
 
 // RawAddress implements C.Listener
@@ -111,6 +150,15 @@ func (l *Listener) handleConn(conn net.Conn, tunnel C.Tunnel, additions ...inbou
 		}
 		closeConns()
 		return
+	}
+	name, ok := l.lookupUser(meta.UserHash)
+	if !ok { // removed after the handshake checked it
+		_ = cConn.Close()
+		closeConns()
+		return
+	}
+	if name != "" {
+		additions = append(append([]inbound.Addition(nil), additions...), inbound.WithInUser(name))
 	}
 	cConn = wrapSessionConn(cConn)
 
@@ -305,6 +353,13 @@ func New(config LC.SudokuServer, lc C.InboundListenConfig, tunnel C.Tunnel, addi
 		handler:   h,
 		fallback:  strings.TrimSpace(config.Fallback),
 	}
+	if config.Users != nil {
+		if err := sl.SetUsers(config.Users); err != nil {
+			_ = l.Close()
+			return nil, err
+		}
+	}
+	sl.protoConf.AllowUserHash = sl.allowUserHash
 	if sl.fallback != "" {
 		sl.tunnelSrv = sudoku.NewHTTPMaskTunnelServerWithFallback(&sl.protoConf)
 	} else {

@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"strings"
+	"time"
 
 	"github.com/metacubex/mihomo/transport/sudoku/obfs/httpmask"
 )
@@ -64,7 +65,9 @@ func newHTTPMaskTunnelServer(cfg *ProtocolConfig, passThroughOnReject bool) *HTT
 				EarlyHandshake: NewHTTPMaskServerEarlyHandshake(
 					newHTTPMaskEarlyCodecConfig(cfg, ServerAEADSeed(cfg.Key)),
 					cfg.tableCandidates(),
-					globalHandshakeReplay.allow,
+					func(userHash string, nonce [kipHelloNonceSize]byte, now time.Time) bool {
+						return cfg.userAllowed(userHash) && globalHandshakeReplay.allow(userHash, nonce, now)
+					},
 				),
 				// When upstream fallback is enabled, preserve rejected HTTP requests for the caller.
 				PassThroughOnReject: passThroughOnReject,
