@@ -1,0 +1,107 @@
+name: Release all Doctor Mobile targets
+
+# Release-only path for changes whose checks have already completed.
+# Normal push/PR test workflows remain unchanged.
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'New release tag, for example v1.19.32-dm5'
+        required: true
+      notes:
+        description: 'Release notes (Markdown)'
+        default: ''
+
+permissions:
+  contents: read
+
+concurrency:
+  group: release-dm-${{ inputs.tag }}
+  cancel-in-progress: false
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { file: libmihomo-arm64-v8a.so, goos: android, goarch: arm64, cgo: '0' }
+          - { file: libmihomo-armeabi-v7a.so, goos: android, goarch: arm, goarm: '7', cgo: '1', cc: armv7a-linux-androideabi21-clang }
+          - { file: libmihomo-x86_64.so, goos: android, goarch: amd64, cgo: '1', cc: x86_64-linux-android21-clang }
+          - { file: mihomo-windows-amd64.exe, goos: windows, goarch: amd64, cgo: '0' }
+          - { file: mihomo-windows-arm64.exe, goos: windows, goarch: arm64, cgo: '0' }
+          - { file: mihomo-linux-amd64, goos: linux, goarch: amd64, cgo: '0' }
+          - { file: mihomo-linux-arm64, goos: linux, goarch: arm64, cgo: '0' }
+          - { file: mihomo-linux-armv7, goos: linux, goarch: arm, goarm: '7', cgo: '0' }
+          - { file: mihomo-linux-mipsle-softfloat, goos: linux, goarch: mipsle, gomips: softfloat, cgo: '0' }
+          - { file: mihomo-linux-mips-softfloat, goos: linux, goarch: mips, gomips: softfloat, cgo: '0' }
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25'
+      - name: Set up Android NDK
+        if: matrix.cgo == '1'
+        id: ndk
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r28
+          add-to-path: false
+      - name: Build versioned binary
+        env:
+          TAG: ${{ inputs.tag }}
+          GOOS: ${{ matrix.goos }}
+          GOARCH: ${{ matrix.goarch }}
+          GOARM: ${{ matrix.goarm }}
+          GOMIPS: ${{ matrix.gomips }}
+          CGO_ENABLED: ${{ matrix.cgo }}
+          OUTPUT_FILE: ${{ matrix.file }}
+          NDK_PATH: ${{ steps.ndk.outputs.ndk-path }}
+          NDK_CC: ${{ matrix.cc }}
+        run: |
+          [[ "$TAG" =~ ^v[0-9]+\.[0-9]+\.[0-9]+-dm[0-9]+$ ]]
+          if [[ "$CGO_ENABLED" == 1 ]]; then
+            export CC="$NDK_PATH/toolchains/llvm/prebuilt/linux-x86_64/bin/$NDK_CC"
+          fi
+          go build -tags with_gvisor -trimpath \
+            -ldflags "-X github.com/metacubex/mihomo/constant.Version=$TAG -s -w" \
+            -o "$OUTPUT_FILE" .
+      - uses: actions/upload-artifact@v4
+        with:
+          retention-days: 1
+          name: ${{ matrix.file }}
+          path: ${{ matrix.file }}
+          if-no-files-found: error
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Publish only after all ten binaries are ready
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ inputs.tag }}
+          NOTES: ${{ inputs.notes }}
+        run: |
+          files=(artifacts/*)
+          [[ ${#files[@]} -eq 10 ]]
+          (cd artifacts && sha256sum * > SHA256SUMS)
+          printf '%s\n' "$NOTES" > notes.md
+          if state=$(gh release view "$TAG" --repo "$GITHUB_REPOSITORY" --json isDraft --jq '.isDraft' 2>/dev/null); then
+            [[ "$state" == true ]] || { echo 'Refusing to replace a published release'; exit 1; }
+            gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft \
+              --target "$GITHUB_SHA" --title "Mihomo $TAG" --notes-file notes.md
+          else
+            gh release create "$TAG" --repo "$GITHUB_REPOSITORY" --draft \
+              --target "$GITHUB_SHA" --title "Mihomo $TAG" --notes-file notes.md
+          fi
+          gh release upload "$TAG" --repo "$GITHUB_REPOSITORY" --clobber artifacts/*
+          gh release edit "$TAG" --repo "$GITHUB_REPOSITORY" --draft=false --latest
