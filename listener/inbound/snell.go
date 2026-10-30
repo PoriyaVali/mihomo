@@ -1,8 +1,10 @@
 package inbound
 
 import (
+	"errors"
 	"fmt"
 	"strings"
+	"sync"
 
 	C "github.com/metacubex/mihomo/constant"
 	LC "github.com/metacubex/mihomo/listener/config"
@@ -19,6 +21,10 @@ type SnellOption struct {
 	ShadowTLS ShadowTLS       `inbound:"shadow-tls,omitempty"`
 	ResTLS    ResTLS          `inbound:"res-tls,omitempty"`
 	JLSConfig JLSConfig       `inbound:"jls-config,omitempty"`
+	// Users, when set, gives each user (name -> PSK) its own key and requires
+	// ShadowTLS version 3, whose handshake names the user: a user's PSK is
+	// also their ShadowTLS password. Psk and ShadowTLS users are then unused.
+	Users map[string]string `inbound:"users,omitempty"`
 }
 
 func (o SnellOption) Equal(config C.InboundConfig) bool {
@@ -32,8 +38,9 @@ type SnellObfsOption struct {
 
 type Snell struct {
 	*Base
+	mu     sync.Mutex
 	config *SnellOption
-	l      C.MultiAddrListener
+	l      *snell.Listener
 	snell  LC.SnellServer
 }
 
@@ -60,6 +67,7 @@ func NewSnell(options *SnellOption) (*Snell, error) {
 			ObfsMode:  options.ObfsOpts.Mode,
 			ObfsHost:  options.ObfsOpts.Host,
 			ShadowTLS: options.ShadowTLS.Build(),
+			Users:     copyUsers(options.Users),
 			ResTLS:    options.ResTLS.Build(),
 			JLSConfig: options.JLSConfig.Build(),
 		},
@@ -67,6 +75,8 @@ func NewSnell(options *SnellOption) (*Snell, error) {
 }
 
 func (s *Snell) Config() C.InboundConfig {
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	return s.config
 }
 
@@ -81,16 +91,42 @@ func (s *Snell) Address() string {
 }
 
 func (s *Snell) Listen(tunnel C.Tunnel) error {
-	var err error
-	s.l, err = snell.New(s.snell, s.ListenConfig(), tunnel, s.Additions()...)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	l, err := snell.New(s.snell, s.ListenConfig(), tunnel, s.Additions()...)
 	if err != nil {
 		return err
 	}
+	s.l = l
 	log.Infoln("Snell[%s] inbound listening at: %s", s.Name(), s.Address())
 	return nil
 }
 
+// UpdateUsers replaces the users of an inbound started with users, without
+// closing it. Connections that already passed the handshake keep running: an
+// embedder removing a user closes that user's connections itself.
+func (s *Snell) UpdateUsers(users map[string]string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.l == nil {
+		return errors.New("snell inbound is not listening")
+	}
+	if err := s.l.SetUsers(users); err != nil {
+		return err
+	}
+	option := *s.config
+	option.Users = copyUsers(users)
+	s.config = &option
+	s.snell.Users = option.Users
+	return nil
+}
+
 func (s *Snell) Close() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.l == nil {
+		return nil
+	}
 	return s.l.Close()
 }
 

@@ -25,6 +25,11 @@ type SudokuServer struct {
 	PathRoot               string   `json:"path-root,omitempty"`
 	Fallback               string   `json:"fallback,omitempty"`
 
+	// Users, when not nil, names each accepted client key (name -> key). A
+	// connection is accepted only for a listed key and is attributed to its
+	// name; an empty map accepts nobody. Nil accepts every holder of Key.
+	Users map[string]string `json:"-"`
+
 	// mihomo private extension (not the part of standard Sudoku protocol)
 	MuxOption sing.MuxOption `json:"mux-option,omitempty"`
 }

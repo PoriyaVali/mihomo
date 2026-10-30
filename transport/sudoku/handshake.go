@@ -405,6 +405,10 @@ func ServerHandshake(rawConn net.Conn, cfg *ProtocolConfig) (net.Conn, *Handshak
 		return nil, nil, fmt.Errorf("invalid config: %w", err)
 	}
 	if userHash, ok := httpmask.EarlyHandshakeUserHash(rawConn); ok {
+		// The tunnel already checked the hash; this catches a user removed since.
+		if !cfg.userAllowed(userHash) {
+			return nil, nil, fmt.Errorf("unknown user")
+		}
 		return rawConn, &HandshakeMeta{UserHash: userHash}, nil
 	}
 
@@ -457,6 +461,10 @@ func ServerHandshake(rawConn net.Conn, cfg *ProtocolConfig) (net.Conn, *Handshak
 	}
 
 	userHashHex := hex.EncodeToString(ch.UserHash[:])
+	// Before the replay cache, which keeps state per user hash.
+	if !cfg.userAllowed(userHashHex) {
+		return nil, nil, &SuspiciousError{Err: fmt.Errorf("unknown user"), Conn: &prefixedRecorderConn{Conn: sConn, prefix: httpHeaderData}}
+	}
 	if !globalHandshakeReplay.allow(userHashHex, ch.Nonce, time.Now()) {
 		return nil, nil, &SuspiciousError{Err: fmt.Errorf("replay"), Conn: &prefixedRecorderConn{Conn: sConn, prefix: httpHeaderData}}
 	}

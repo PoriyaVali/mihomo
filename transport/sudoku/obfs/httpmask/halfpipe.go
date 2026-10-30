@@ -91,9 +91,26 @@ type halfPipeConn struct {
 
 	readDeadline  pipeDeadline
 	writeDeadline pipeDeadline
+
+	// localAddr and remoteAddr override the pipe's own address (newTunnelPipe).
+	localAddr, remoteAddr net.Addr
 }
 
 func newHalfPipe() (net.Conn, net.Conn) {
+	c1, c2 := newHalfPipeConns()
+	return c1, c2
+}
+
+// newTunnelPipe is a half pipe whose first end reports the addresses of the
+// HTTP connection that opened the tunnel; the tunnel's later requests come
+// from the same client, whose address the proxy behind it needs.
+func newTunnelPipe(opener net.Conn) (net.Conn, net.Conn) {
+	c1, c2 := newHalfPipeConns()
+	c1.localAddr, c1.remoteAddr = opener.LocalAddr(), opener.RemoteAddr()
+	return c1, c2
+}
+
+func newHalfPipeConns() (*halfPipeConn, *halfPipeConn) {
 	cb1 := make(chan []byte)
 	cb2 := make(chan []byte)
 	cn1 := make(chan int)
@@ -135,8 +152,19 @@ func newHalfPipe() (net.Conn, net.Conn) {
 	return c1, c2
 }
 
-func (*halfPipeConn) LocalAddr() net.Addr  { return halfPipeAddr{} }
-func (*halfPipeConn) RemoteAddr() net.Addr { return halfPipeAddr{} }
+func (c *halfPipeConn) LocalAddr() net.Addr {
+	if c.localAddr != nil {
+		return c.localAddr
+	}
+	return halfPipeAddr{}
+}
+
+func (c *halfPipeConn) RemoteAddr() net.Addr {
+	if c.remoteAddr != nil {
+		return c.remoteAddr
+	}
+	return halfPipeAddr{}
+}
 
 func (c *halfPipeConn) Read(p []byte) (int, error) {
 	switch {

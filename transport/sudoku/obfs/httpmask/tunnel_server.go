@@ -715,8 +715,8 @@ func (s *TunnelServer) sessionAuthorize(rawConn net.Conn, headerBytes, buffered,
 		return HandleDone, nil, nil
 	}
 
-	c1, c2 := newHalfPipe()
-	outConn := net.Conn(c1)
+	c1, c2 := newTunnelPipe(rawConn)
+	outConn := c1
 	var responsePayload []byte
 	var userHash string
 	if len(earlyPayload) > 0 && s.earlyHandshake != nil && s.earlyHandshake.Prepare != nil {

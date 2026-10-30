@@ -73,6 +73,16 @@ type ProtocolConfig struct {
 	// HTTPMaskMultiplex is the legacy location for Multiplex.
 	// When both fields are set, this legacy field wins for compatibility.
 	HTTPMaskMultiplex string
+
+	// Server-only: AllowUserHash, when set, accepts a client hello only for
+	// the user hashes it reports (see KIPUserHashHexFromKey). Every holder of
+	// the public key completes the obfuscation and AEAD layers, so the hash is
+	// what tells users apart. Nil accepts every user hash.
+	AllowUserHash func(userHash string) bool
+}
+
+func (c *ProtocolConfig) userAllowed(userHash string) bool {
+	return c.AllowUserHash == nil || c.AllowUserHash(userHash)
 }
 
 func (c *ProtocolConfig) Validate() error {
