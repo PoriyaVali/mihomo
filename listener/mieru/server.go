@@ -5,6 +5,8 @@ import (
 	"io"
 	"net"
 	"net/netip"
+	"strconv"
+	"sync/atomic"
 
 	"github.com/metacubex/mihomo/adapter/inbound"
 	N "github.com/metacubex/mihomo/common/net"
@@ -57,8 +59,13 @@ func Handle(conn net.Conn, tunnel C.Tunnel, request *mierumodel.Request, additio
 		pc := mierucommon.NewPacketOverStreamTunnel(conn)
 		ep := N.NewEnhancePacketConn(pc)
 		defer ep.Close()
+		// Every association of a session reads its packets as coming from the
+		// session's remote address. Name each one apart, so that a NAT keyed on
+		// the packet source sends an association its own replies, not those of
+		// the session's earlier association to the same destination.
+		source := N.NewCustomAddr("mieru", "mieru-"+strconv.FormatUint(associations.Add(1), 10), conn.RemoteAddr())
 		for {
-			data, put, addr, err := ep.WaitReadFrom()
+			data, put, _, err := ep.WaitReadFrom()
 			if err != nil {
 				if put != nil {
 					// Unresolved UDP packet, return buffer to the pool.
@@ -76,7 +83,7 @@ func Handle(conn net.Conn, tunnel C.Tunnel, request *mierumodel.Request, additio
 			}
 			packet := &packet{
 				pc:      ep,
-				addr:    addr,
+				addr:    source,
 				payload: payload,
 				put:     put,
 			}
@@ -85,9 +92,12 @@ func Handle(conn net.Conn, tunnel C.Tunnel, request *mierumodel.Request, additio
 	}
 }
 
+// associations numbers the UDP associations the listeners accept.
+var associations atomic.Uint64
+
 type packet struct {
 	pc      net.PacketConn
-	addr    net.Addr // source (i.e. remote) IP & Port of the packet
+	addr    net.Addr // the association, whose raw address is the session's remote IP & Port
 	payload []byte
 	put     func()
 }
