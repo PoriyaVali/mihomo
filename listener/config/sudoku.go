@@ -30,6 +30,9 @@ type SudokuServer struct {
 	// name; an empty map accepts nobody. Nil accepts every holder of Key.
 	Users map[string]string `json:"-"`
 
+	// Name is the inbound's name, used in log lines.
+	Name string `json:"-"`
+
 	// mihomo private extension (not the part of standard Sudoku protocol)
 	MuxOption sing.MuxOption `json:"mux-option,omitempty"`
 }

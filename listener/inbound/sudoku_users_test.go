@@ -1,11 +1,15 @@
 package inbound_test
 
 import (
+	"net"
 	"net/netip"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/metacubex/mihomo/adapter/outbound"
 	"github.com/metacubex/mihomo/listener/inbound"
+	"github.com/metacubex/mihomo/log"
 	"github.com/metacubex/mihomo/transport/sudoku/crypto"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -138,4 +142,39 @@ func TestInboundSudokuUsersRejectsForeignKeys(t *testing.T) {
 	assert.Error(t, in.UpdateUsers(map[string]string{"alice": keys["alice"], "eve": other["eve"]}))
 	assert.Error(t, in.UpdateUsers(map[string]string{"alice": keys["alice"], "twin": keys["alice"]}), "two users cannot share a key")
 	assert.Equal(t, map[string]string{"alice": keys["alice"]}, in.Config().(*inbound.SudokuOption).Users)
+}
+
+// A tunnel request in a mode the listener does not serve (here a poll client
+// at a stream listener) goes to the fallback, and the log names the listener
+// that refused it and the client it came from.
+func TestInboundSudokuLogsMaskRejection(t *testing.T) {
+	events := log.Subscribe()
+	defer log.UnSubscribe(events)
+	public, _ := sudokuUserKeys(t)
+	option := inbound.SudokuOption{Key: public, HTTPMaskMode: "stream", PathRoot: "tunnel", Fallback: "127.0.0.1:9"}
+	option.BaseOption = inbound.BaseOption{NameStr: "sudoku_logged", Listen: "127.0.0.1", Port: "0"}
+	in, err := inbound.NewSudoku(&option)
+	require.NoError(t, err)
+	require.NoError(t, in.Listen(&echoTunnel{}))
+	t.Cleanup(func() { _ = in.Close() })
+
+	conn, err := net.DialTimeout("tcp", in.Address(), 5*time.Second)
+	require.NoError(t, err)
+	defer conn.Close()
+	_, err = conn.Write([]byte("GET /tunnel/session HTTP/1.1\r\nHost: example.com\r\nX-Sudoku-Tunnel: poll\r\n\r\n"))
+	require.NoError(t, err)
+
+	deadline := time.After(5 * time.Second)
+	for {
+		select {
+		case event := <-events:
+			if strings.Contains(event.Payload, "Sudoku[sudoku_logged] HTTP request from "+conn.LocalAddr().String()) {
+				assert.Equal(t, log.WARNING, event.LogLevel)
+				assert.Contains(t, event.Payload, "does not match the HTTP mask")
+				return
+			}
+		case <-deadline:
+			t.Fatal("no log line for the refused request")
+		}
+	}
 }

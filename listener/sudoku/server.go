@@ -32,6 +32,9 @@ type Listener struct {
 	tunnelSrv *sudoku.HTTPMaskTunnelServer
 	fallback  string
 	handler   *sing.ListenerHandler
+	// name is the inbound's name; logs carry it so an embedder serving
+	// several nodes can tell which one refused a client.
+	name string
 	// users maps a user hash to its name; nil accepts every key holder.
 	users atomic.Pointer[map[string]string]
 }
@@ -93,8 +96,16 @@ func (l *Listener) Close() error {
 	return nil
 }
 
+// logName is "Sudoku[name]" for a named inbound and "[Sudoku]" otherwise.
+func (l *Listener) logName() string {
+	if l.name == "" {
+		return "[Sudoku]"
+	}
+	return "Sudoku[" + l.name + "]"
+}
+
 func (l *Listener) handleConn(conn net.Conn, tunnel C.Tunnel, additions ...inbound.Addition) {
-	log.Debugln("[Sudoku] accepted %s", conn.RemoteAddr())
+	log.Debugln("%s accepted %s", l.logName(), conn.RemoteAddr())
 	handshakeConn := conn
 	handshakeCfg := &l.protoConf
 	closeConns := func() {
@@ -122,6 +133,9 @@ func (l *Listener) handleConn(conn net.Conn, tunnel C.Tunnel, additions ...inbou
 
 	if l.fallback != "" {
 		if r, ok := handshakeConn.(interface{ IsHTTPMaskRejected() bool }); ok && r.IsHTTPMaskRejected() {
+			// A client whose HTTP mask mode or path differs from this
+			// listener's lands here too, so say why it got the fallback.
+			log.Warnln("%s HTTP request from %s does not match the HTTP mask (mode, path or session); sent to the fallback", l.logName(), conn.RemoteAddr())
 			fb, err := inner.HandleTcp(tunnel, l.fallback, "")
 			if err != nil {
 				closeConns()
@@ -138,7 +152,7 @@ func (l *Listener) handleConn(conn net.Conn, tunnel C.Tunnel, additions ...inbou
 		var susp *sudoku.SuspiciousError
 		isSuspicious := errors.As(err, &susp) && susp != nil && susp.Conn != nil
 		if isSuspicious {
-			log.Warnln("[Sudoku] suspicious handshake from %s: %v", conn.RemoteAddr(), err)
+			log.Warnln("%s suspicious handshake from %s: %v", l.logName(), conn.RemoteAddr(), err)
 			if fallbackAddr != "" {
 				fb, err := inner.HandleTcp(tunnel, fallbackAddr, "")
 				if err == nil {
@@ -147,7 +161,7 @@ func (l *Listener) handleConn(conn net.Conn, tunnel C.Tunnel, additions ...inbou
 				}
 			}
 		} else {
-			log.Debugln("[Sudoku] handshake failed from %s: %v", conn.RemoteAddr(), err)
+			log.Debugln("%s handshake failed from %s: %v", l.logName(), conn.RemoteAddr(), err)
 		}
 		closeConns()
 		return
@@ -165,7 +179,7 @@ func (l *Listener) handleConn(conn net.Conn, tunnel C.Tunnel, additions ...inbou
 
 	session, err := sudoku.ReadServerSession(cConn, meta)
 	if err != nil {
-		log.Warnln("[Sudoku] read session failed from %s: %v", conn.RemoteAddr(), err)
+		log.Warnln("%s read session failed from %s: %v", l.logName(), conn.RemoteAddr(), err)
 		_ = cConn.Close()
 		if handshakeConn != conn {
 			_ = conn.Close()
@@ -200,7 +214,7 @@ func (l *Listener) handleConn(conn net.Conn, tunnel C.Tunnel, additions ...inbou
 	default:
 		targetAddr := socks5.ParseAddr(session.Target)
 		if targetAddr == nil {
-			log.Warnln("[Sudoku] invalid target from %s: %q", conn.RemoteAddr(), session.Target)
+			log.Warnln("%s invalid target from %s: %q", l.logName(), conn.RemoteAddr(), session.Target)
 			_ = session.Conn.Close()
 			return
 		}
@@ -350,6 +364,7 @@ func New(config LC.SudokuServer, lc C.InboundListenConfig, tunnel C.Tunnel, addi
 		protoConf: protoConf,
 		handler:   h,
 		fallback:  strings.TrimSpace(config.Fallback),
+		name:      config.Name,
 	}
 	if config.Users != nil {
 		if err := sl.SetUsers(config.Users); err != nil {
