@@ -17,15 +17,18 @@ import (
 	"github.com/stretchr/testify/require"
 )
 
-// echoTunnel echoes every TCP stream and records which user opened it.
+// echoTunnel echoes every TCP stream and records which user opened it, and
+// from where.
 type echoTunnel struct {
-	mu    sync.Mutex
-	users []string
+	mu      sync.Mutex
+	users   []string
+	sources []netip.Addr
 }
 
 func (t *echoTunnel) HandleTCPConn(conn net.Conn, metadata *C.Metadata) {
 	t.mu.Lock()
 	t.users = append(t.users, metadata.InUser)
+	t.sources = append(t.sources, metadata.SrcIP)
 	t.mu.Unlock()
 	defer conn.Close()
 	_, _ = io.Copy(conn, conn)
@@ -37,6 +40,12 @@ func (t *echoTunnel) seen() []string {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 	return append([]string(nil), t.users...)
+}
+
+func (t *echoTunnel) seenFrom() []netip.Addr {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return append([]netip.Addr(nil), t.sources...)
 }
 
 type echoDialer interface {

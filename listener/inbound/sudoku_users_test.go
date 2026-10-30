@@ -67,7 +67,8 @@ func TestInboundSudokuUpdateUsersKeepsOtherSessions(t *testing.T) {
 }
 
 // Every HTTP mask mode and session mux attributes a connection to the user
-// whose key opened it, and refuses a key of the same master that is not listed.
+// whose key opened it and to the client's address, and refuses a key of the
+// same master that is not listed.
 func TestInboundSudokuUsersAttribution(t *testing.T) {
 	httpMask := true
 	cases := []struct {
@@ -79,6 +80,8 @@ func TestInboundSudokuUsersAttribution(t *testing.T) {
 		{name: "legacy"},
 		{name: "no-mask", in: inbound.SudokuOption{DisableHTTPMask: true}, out: outbound.SudokuOption{HTTPMask: new(bool)}},
 		{name: "mux", multiplex: "on"},
+		{name: "auto", in: inbound.SudokuOption{HTTPMaskMode: "auto"}, out: outbound.SudokuOption{HTTPMask: &httpMask, HTTPMaskMode: "auto"}},
+		{name: "stream-mux", in: inbound.SudokuOption{HTTPMaskMode: "stream"}, out: outbound.SudokuOption{HTTPMask: &httpMask, HTTPMaskMode: "stream"}, multiplex: "on"},
 		{name: "stream", in: inbound.SudokuOption{HTTPMaskMode: "stream"}, out: outbound.SudokuOption{HTTPMask: &httpMask, HTTPMaskMode: "stream"}},
 		{name: "poll", in: inbound.SudokuOption{HTTPMaskMode: "poll"}, out: outbound.SudokuOption{HTTPMask: &httpMask, HTTPMaskMode: "poll"}},
 		{name: "ws", in: inbound.SudokuOption{HTTPMaskMode: "ws"}, out: outbound.SudokuOption{HTTPMask: &httpMask, HTTPMaskMode: "ws"}},
@@ -104,6 +107,11 @@ func TestInboundSudokuUsersAttribution(t *testing.T) {
 				_ = conn.Close()
 			}
 			assert.ElementsMatch(t, []string{"alice", "bob"}, tunnel.seen())
+			// The proxy sees the client's address, which a device limit counts,
+			// through HTTP tunnels and mux streams too.
+			for _, source := range tunnel.seenFrom() {
+				assert.Equal(t, "127.0.0.1", source.String())
+			}
 
 			for _, key := range []string{keys["mallory"], public} {
 				client := tc.out

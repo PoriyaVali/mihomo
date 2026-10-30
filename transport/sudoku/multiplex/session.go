@@ -413,11 +413,21 @@ type stream struct {
 }
 
 func newStream(session *Session, id uint32) *stream {
+	// A stream comes from the peer of the connection it is multiplexed over.
+	var localAddr, remoteAddr net.Addr = &net.TCPAddr{}, &net.TCPAddr{}
+	if session.conn != nil {
+		if addr := session.conn.LocalAddr(); addr != nil {
+			localAddr = addr
+		}
+		if addr := session.conn.RemoteAddr(); addr != nil {
+			remoteAddr = addr
+		}
+	}
 	st := &stream{
 		session:    session,
 		id:         id,
-		localAddr:  &net.TCPAddr{},
-		remoteAddr: &net.TCPAddr{},
+		localAddr:  localAddr,
+		remoteAddr: remoteAddr,
 	}
 	st.cond = sync.NewCond(&st.mu)
 	return st
