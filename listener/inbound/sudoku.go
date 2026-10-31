@@ -182,6 +182,7 @@ func (s *Sudoku) Listen(tunnel C.Tunnel) error {
 	for _, addr := range strings.Split(s.RawAddress(), ",") {
 		conf := s.serverConf
 		conf.Listen = addr
+		conf.Name = s.Name()
 
 		l, err := sudoku.New(conf, lc, tunnel, s.Additions()...)
 		if err != nil {
