@@ -34,9 +34,15 @@ func WithProbe(ctx context.Context, shape Shape) (context.Context, *Probe) {
 }
 
 func WrapContext(ctx context.Context, conn net.Conn) net.Conn {
+	return WrapContextName(ctx, conn, "")
+}
+
+// WrapContextName is WrapContext with the server name of the handshake. A
+// probe always gets the exact shape it asked for, never the adaptive one.
+func WrapContextName(ctx context.Context, conn net.Conn, serverName string) net.Conn {
 	p, ok := ctx.Value(probeKey{}).(*Probe)
 	if !ok {
-		return Wrap(conn)
+		return WrapName(conn, serverName)
 	}
 	p.mu.Lock()
 	defer p.mu.Unlock()

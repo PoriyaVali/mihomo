@@ -2,6 +2,7 @@ package mirage
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"net"
 	"strings"
@@ -115,13 +116,27 @@ func TestWrapRespectsDisabled(t *testing.T) {
 	old := enabled
 	defer func() { enabled = old }()
 
+	oldAuto := AutoEnabled()
+	defer SetAuto(oldAuto)
+
 	enabled = false
-	if _, wrapped := Wrap(c1).(*Conn); wrapped {
+	if Wrap(c1) != net.Conn(c1) {
 		t.Error("Wrap must return the connection untouched when disabled")
 	}
 	enabled = true
+	SetAuto(false)
 	if _, wrapped := Wrap(c1).(*Conn); !wrapped {
-		t.Error("Wrap must fragment when enabled")
+		t.Error("Wrap must use the fixed shape when enabled without auto")
+	}
+	SetAuto(true)
+	if _, adaptive := WrapName(c1, "www.example.com").(*AdaptiveConn); !adaptive {
+		t.Error("Wrap must use the adaptive conn when auto is on")
+	}
+	// A probe asks for one exact shape and must get it even with auto on.
+	ctx, probe := WithProbe(context.Background(), Shape{Offset: 5, Records: 2})
+	defer probe.Close()
+	if _, fixed := WrapContextName(ctx, c1, "www.example.com").(*Conn); !fixed {
+		t.Error("a probe must get the fixed shape it asked for")
 	}
 }
 
