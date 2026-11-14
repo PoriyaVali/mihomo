@@ -9,12 +9,15 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/binary"
+	"fmt"
 	"io"
 	"math/big"
 	"net"
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/metacubex/mihomo/log"
 
 	"github.com/stretchr/testify/require"
 )
@@ -59,6 +62,45 @@ func TestMirageBookRotatesAndRemembers(t *testing.T) {
 
 	// A server seen afterwards starts where the last success was.
 	require.Equal(t, 1, book.pick("b"))
+}
+
+func TestMirageBookLogsWhatItLearns(t *testing.T) {
+	type line struct {
+		level log.LogLevel
+		text  string
+	}
+	var mu sync.Mutex
+	var lines []line
+	previous := mirageLog
+	mirageLog = func(level log.LogLevel, format string, v ...any) {
+		mu.Lock()
+		defer mu.Unlock()
+		lines = append(lines, line{level, fmt.Sprintf(format, v...)})
+	}
+	t.Cleanup(func() { mirageLog = previous })
+
+	book := newMirageBook(defaultShape())
+	first, second := book.candidates[0], book.candidates[1]
+
+	// An unproven shape dropped at its first failure: a warning naming both.
+	book.pick("srv|192.0.2.1:443")
+	book.report("srv|192.0.2.1:443", 0, false)
+	// The next shape gets through: said once, at the level apps log at.
+	book.pick("srv|192.0.2.1:443")
+	book.report("srv|192.0.2.1:443", 1, true)
+	book.report("srv|192.0.2.1:443", 1, true)
+	// One failure of a proven shape is below the limit: debug only.
+	book.report("srv|192.0.2.1:443", 1, false)
+	// A stale verdict about a shape it left says nothing.
+	book.report("srv|192.0.2.1:443", 0, false)
+
+	mu.Lock()
+	defer mu.Unlock()
+	require.Equal(t, []line{
+		{log.WARNING, fmt.Sprintf("[Mirage] srv|192.0.2.1:443: %s dropped after 1 failure(s); next: %s", first, second)},
+		{log.WARNING, fmt.Sprintf("[Mirage] srv|192.0.2.1:443: %s gets through", second)},
+		{log.DEBUG, fmt.Sprintf("[Mirage] srv|192.0.2.1:443: %s failed (1 of 2)", second)},
+	}, lines)
 }
 
 func TestMirageBookIgnoresVerdictsAboutAShapeItLeft(t *testing.T) {

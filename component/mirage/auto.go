@@ -8,6 +8,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"github.com/metacubex/mihomo/log"
 )
 
 // Adaptive Mirage (Doctor Mobile). This file is mirrored in the sing-box fork
@@ -186,16 +188,31 @@ func (b *Book) evictOldest() {
 // verdict about a shape the server has already moved off is ignored, so a
 // burst of failures from connections opened together moves it only once.
 func (b *Book) report(key string, index int, ok bool) {
+	// The verdict is logged after the lock is released.
+	var event func()
 	b.mu.Lock()
-	defer b.mu.Unlock()
+	defer func() {
+		b.mu.Unlock()
+		if event != nil {
+			event()
+		}
+	}()
 	entry := b.entries[key]
 	if entry == nil || entry.index != index {
 		return
 	}
+	shape := b.candidates[index]
 	if ok {
+		first := !entry.proven
 		entry.failures = 0
 		entry.proven = true
 		b.hint = index
+		if first {
+			// A warning, though it is good news: apps run the core at warning,
+			// and without this line a shape that works at once leaves no trace
+			// of Mirage in the log. Once per server and shape.
+			event = func() { mirageLog(log.WARNING, "[Mirage] %s: %s gets through", key, shape) }
+		}
 		return
 	}
 	entry.failures++
@@ -203,12 +220,33 @@ func (b *Book) report(key string, index int, ok bool) {
 	if entry.proven {
 		limit = mirageProvenFailures
 	}
-	if entry.failures < limit {
+	failures := entry.failures
+	if failures < limit {
+		event = func() { mirageLog(log.DEBUG, "[Mirage] %s: %s failed (%d of %d)", key, shape, failures, limit) }
 		return
 	}
 	entry.index = (entry.index + 1) % len(b.candidates)
 	entry.failures = 0
 	entry.proven = false
+	next := b.candidates[entry.index]
+	event = func() {
+		mirageLog(log.WARNING, "[Mirage] %s: %s dropped after %d failure(s); next: %s", key, shape, failures, next)
+	}
+}
+
+// mirageLog writes adaptive Mirage's verdicts to the core log, so a report
+// shows which ClientHello shape each server got through with and which ones a
+// censor dropped. Both are warnings, the level the app logs at by default; a
+// single failure below the limit is debug. Tests replace it.
+var mirageLog = func(level log.LogLevel, format string, v ...any) {
+	switch level {
+	case log.WARNING:
+		log.Warnln(format, v...)
+	case log.INFO:
+		log.Infoln(format, v...)
+	default:
+		log.Debugln(format, v...)
+	}
 }
 
 const (
