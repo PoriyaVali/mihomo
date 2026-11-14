@@ -47,6 +47,9 @@ import (
 // General config
 type General struct {
 	Inbound
+	// MirageAuto is the config's `mirage-auto`; nil leaves the core's
+	// current setting (DM_MIRAGE_AUTO, on by default) alone.
+	MirageAuto        *bool                   `json:"mirage-auto,omitempty"`
 	Mode              T.TunnelMode            `json:"mode"`
 	UnifiedDelay      bool                    `json:"unified-delay"`
 	LogLevel          log.LogLevel            `json:"log-level"`
@@ -402,6 +405,7 @@ type RawTLS struct {
 }
 
 type RawConfig struct {
+	MirageAuto                    *bool                   `yaml:"mirage-auto" json:"mirage-auto"`
 	Port                          int                     `yaml:"port" json:"port"`
 	SocksPort                     int                     `yaml:"socks-port" json:"socks-port"`
 	RedirPort                     int                     `yaml:"redir-port" json:"redir-port"`
@@ -780,6 +784,7 @@ func parseGeneral(cfg *RawConfig) (*General, error) {
 			InboundMPTCP:      cfg.InboundMPTCP,
 		},
 		UnifiedDelay: cfg.UnifiedDelay,
+		MirageAuto:   cfg.MirageAuto,
 		Mode:         cfg.Mode,
 		LogLevel:     cfg.LogLevel,
 		IPv6:         cfg.IPv6,

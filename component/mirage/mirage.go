@@ -69,6 +69,7 @@ import (
 	"os"
 	"strconv"
 	"sync"
+	"sync/atomic"
 )
 
 const (
@@ -102,7 +103,21 @@ var (
 	// rather than a guess, and it is the other free variable if the two-record
 	// shape is ever singled out.
 	records = envInt("DM_MIRAGE_RECORDS", 2)
+
+	// auto moves a server off a shape its censor resets, cuts or ignores,
+	// learning from the connections being made anyway (see auto.go). On by
+	// default; DM_MIRAGE_AUTO=0 or `mirage-auto: false` in the config turns
+	// it off.
+	auto atomic.Bool
 )
+
+func init() { auto.Store(envBool("DM_MIRAGE_AUTO", true)) }
+
+// SetAuto turns adaptive Mirage on or off for connections made from now on.
+func SetAuto(on bool) { auto.Store(on) }
+
+// AutoEnabled reports whether new connections use adaptive Mirage.
+func AutoEnabled() bool { return auto.Load() }
 
 // Enabled reports whether Mirage should wrap new TLS connections.
 func Enabled() bool { return enabled }
@@ -110,8 +125,17 @@ func Enabled() bool { return enabled }
 // Wrap returns conn wrapped so that the first ClientHello written to it is
 // fragmented. When Mirage is disabled it returns conn untouched.
 func Wrap(conn net.Conn) net.Conn {
+	return WrapName(conn, "")
+}
+
+// WrapName is Wrap with the server name the ClientHello carries, which
+// adaptive Mirage keeps its verdicts under alongside the address.
+func WrapName(conn net.Conn, serverName string) net.Conn {
 	if !enabled || conn == nil {
 		return conn
+	}
+	if auto.Load() {
+		return NewAdaptiveConn(conn, AutoBook(offset, records, coalesce), serverName)
 	}
 	return NewConn(conn, offset)
 }
