@@ -208,7 +208,10 @@ func (b *Book) report(key string, index int, ok bool) {
 		entry.proven = true
 		b.hint = index
 		if first {
-			event = func() { mirageLog(log.INFO, "[Mirage] %s: %s gets through", key, shape) }
+			// A warning, though it is good news: apps run the core at warning,
+			// and without this line a shape that works at once leaves no trace
+			// of Mirage in the log. Once per server and shape.
+			event = func() { mirageLog(log.WARNING, "[Mirage] %s: %s gets through", key, shape) }
 		}
 		return
 	}
@@ -233,9 +236,8 @@ func (b *Book) report(key string, index int, ok bool) {
 
 // mirageLog writes adaptive Mirage's verdicts to the core log, so a report
 // shows which ClientHello shape each server got through with and which ones a
-// censor dropped. Drops are warnings, the level the app logs at by default;
-// a first success is info and a single failure below the limit is debug.
-// Tests replace it.
+// censor dropped. Both are warnings, the level the app logs at by default; a
+// single failure below the limit is debug. Tests replace it.
 var mirageLog = func(level log.LogLevel, format string, v ...any) {
 	switch level {
 	case log.WARNING:
