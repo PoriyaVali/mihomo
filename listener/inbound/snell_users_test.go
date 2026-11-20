@@ -64,7 +64,7 @@ func TestInboundSnellUpdateUsersKeepsOtherSessions(t *testing.T) {
 		name    string
 		version int
 		reuse   bool
-	}{{"v3", 3, false}, {"v4-reuse", 4, true}, {"v5", 5, false}} {
+	}{{"v3", 3, false}, {"v4-reuse", 4, true}, {"v5", 5, false}, {"v6", 6, false}, {"v6-reuse", 6, true}} {
 		tc := tc
 		t.Run(tc.name, func(t *testing.T) {
 			t.Parallel()
@@ -76,6 +76,24 @@ func TestInboundSnellUpdateUsersKeepsOtherSessions(t *testing.T) {
 			assert.Equal(t, 2, len(in.Config().(*inbound.SnellOption).Users))
 		})
 	}
+}
+
+// A version 6 server takes PSKs of 12 to 255 bytes. With users, each user's
+// PSK is the key of their v6 stream, so each is checked, at start and when
+// the users are replaced.
+func TestInboundSnellUsersV6PSKLength(t *testing.T) {
+	base := inbound.BaseOption{NameStr: "snell_v6_users", Listen: "127.0.0.1", Port: "0"}
+	short, err := inbound.NewSnell(&inbound.SnellOption{BaseOption: base, Version: 6,
+		Users: map[string]string{"alice": "alice-password", "bob": "short"},
+		ShadowTLS: inbound.ShadowTLS{Enable: true, Version: 3, StrictMode: true,
+			Handshake: inbound.ShadowTLSHandshakeOptions{Dest: net.JoinHostPort(realityDest, "443")}}})
+	require.NoError(t, err)
+	assert.ErrorContains(t, short.Listen(&echoTunnel{}), "psk length", "a v6 user PSK under 12 bytes is rejected at start")
+
+	in, _, _ := startSnellUsers(t, inbound.SnellOption{Version: 6, Users: map[string]string{"alice": "alice-password"}})
+	assert.ErrorContains(t, in.UpdateUsers(map[string]string{"alice": "alice-password", "bob": "short"}), "psk length")
+	assert.Equal(t, map[string]string{"alice": "alice-password"}, in.Config().(*inbound.SnellOption).Users,
+		"a rejected update leaves the users as they were")
 }
 
 func TestInboundSnellUsersNeedTheirOwnPSK(t *testing.T) {

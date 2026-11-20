@@ -34,7 +34,8 @@ type Listener struct {
 	listeners []net.Listener
 	shadowTLS *shadowtls.Builder
 	// psks maps a user to their PSK; nil means one PSK for everybody.
-	psks atomic.Pointer[map[string]string]
+	psks   atomic.Pointer[map[string]string]
+	v6Mode snell.V6Mode // only used for version 6
 }
 
 // shadowTLSUsers turns the Snell users into ShadowTLS v3 users: the
@@ -58,6 +59,17 @@ func shadowTLSUsers(users map[string]string) ([]LC.ShadowTLSUser, error) {
 	return list, nil
 }
 
+// validateV6Users checks that every user's PSK is one a version 6 server
+// accepts. Each user's PSK is the key of their v6 stream.
+func validateV6Users(users map[string]string) error {
+	for name, psk := range users {
+		if err := snell.ValidateV6PSK([]byte(psk)); err != nil {
+			return fmt.Errorf("snell inbound user %q: %w", name, err)
+		}
+	}
+	return nil
+}
+
 func (l *Listener) storePSKs(users map[string]string) {
 	psks := make(map[string]string, len(users))
 	for name, psk := range users {
@@ -77,6 +89,11 @@ func (l *Listener) SetUsers(users map[string]string) error {
 	if err != nil {
 		return err
 	}
+	if l.config.Version == snell.Version6 {
+		if err := validateV6Users(users); err != nil {
+			return err
+		}
+	}
 	// A PSK first, then the handshake that leads to it.
 	l.storePSKs(users)
 	return l.shadowTLS.SetUsers(list)
@@ -88,6 +105,10 @@ func New(config LC.SnellServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 	}
 	switch config.Version {
 	case snell.Version1, snell.Version2, snell.Version3, snell.Version4, snell.Version5:
+		if config.Mode != "" {
+			return nil, errors.New("snell inbound mode is only supported on version 6")
+		}
+	case snell.Version6:
 	default:
 		return nil, fmt.Errorf("snell inbound version %d is not supported", config.Version)
 	}
@@ -110,6 +131,24 @@ func New(config LC.SnellServer, lc C.InboundListenConfig, tunnel C.Tunnel, addit
 	}
 
 	l := &Listener{config: config}
+	if config.Version == snell.Version6 {
+		if config.Users != nil {
+			if err := validateV6Users(config.Users); err != nil {
+				return nil, err
+			}
+		} else if err := snell.ValidateV6PSK([]byte(config.Psk)); err != nil {
+			return nil, fmt.Errorf("snell inbound %w", err)
+		}
+		if config.ObfsMode != "" {
+			// v6 replaced the simple-obfs layer with PSK-derived traffic shaping
+			return nil, fmt.Errorf("snell inbound version 6 does not support obfs mode %s", config.ObfsMode)
+		}
+		var err error
+		l.v6Mode, err = snell.ParseV6Mode(config.Mode)
+		if err != nil {
+			return nil, fmt.Errorf("snell inbound %w", err)
+		}
+	}
 	if config.Users != nil {
 		l.storePSKs(config.Users)
 	}
@@ -231,7 +270,12 @@ func (l *Listener) HandleConn(rawConn net.Conn, tunnel C.Tunnel, additions ...in
 			return // removed after its ShadowTLS handshake
 		}
 	}
-	stream := snell.ServerStreamConn(conn, []byte(psk), l.config.Version)
+	var stream *snell.Snell
+	if l.config.Version == snell.Version6 {
+		stream = snell.ServerStreamConnV6(conn, []byte(psk), l.v6Mode)
+	} else {
+		stream = snell.ServerStreamConn(conn, []byte(psk), l.config.Version)
+	}
 	for {
 		reuse, err := l.handleRequest(stream, tunnel, additions...)
 		if err != nil || !reuse {
